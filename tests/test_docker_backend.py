@@ -154,3 +154,77 @@ def test_polynomial_negative_means_message_and_kriging_still_works(container):
     direct = {row["factor"]: row["direct"] for row in kriging["sobol"]}
     assert direct["a"] == pytest.approx(0.5, abs=0.1)
     assert direct["b"] == pytest.approx(0.5, abs=0.1)
+
+
+def test_analysis_is_reproducible_and_failures_keep_old_results(container):
+    _, work = container
+    shutil.copytree(DATA / "noisy", work / "noisy2")
+    call("set_saved", model="noisy2", config="Noisy", names=["Y"])
+    call("sa_create_design", model="noisy2", config="Noisy",
+         factors={"a": [0, 1], "b": [2, 3]}, samples=20, validation_samples=8, seed=1)
+    assert call("sa_run_design", model="noisy2", config="Noisy")["ok"]
+    first = call("sa_analyze", model="noisy2", config="Noisy", variable="Y")
+    again = call("sa_analyze", model="noisy2", config="Noisy", variable="Y")
+    assert first["ok"] and first["sobol"] == again["sobol"] and first["fit"] == again["fit"]
+    saved = (work / "noisy2" / "Noisy_sa" / "Y-kriging" / "sobol.csv").read_text()
+    failed = call("sa_analyze", model="noisy2", config="Noisy", variable="Y", metamodel="polynomial")
+    assert failed["ok"] is False
+    assert (work / "noisy2" / "Noisy_sa" / "Y-kriging" / "sobol.csv").read_text() == saved
+    assert not list((work / "noisy2").rglob("error.txt"))
+
+
+def test_gcc_reports_equation_location_for_macro_error(container):
+    _, work = container
+    shutil.copytree(DATA / "linear", work / "macro")
+    bad = ('#include "fun_head.h"\n\nMODELBEGIN\n\nEQUATION( "Z" )\nv[0] = V( "a" )\n'
+           'RESULT( v[0] )\n\nMODELEND\n\nvoid close_sim( void )\n{\n}\n')
+    (work / "macro" / "fun_Linear.cpp").write_text(bad)
+    result = call("compile_model", model="macro")
+    assert result["ok"] is False
+    assert "fun_head.h:187" in result["errors"][0]
+    # g++ may print typographic quotes depending on the container's locale
+    assert "[in equation file: fun_Linear.cpp:7, in expansion of macro" in result["errors"][0]
+    assert "RESULT" in result["errors"][0]
+
+
+def test_variable_starting_with_underscore_can_be_analysed(container):
+    _, work = container
+    assert call("copy_model", source="SantAnna/Industry", name="ind")["model"] == "ind"
+    call("set_run_settings", model="ind", config="MarkI-Beta", steps=60)
+    call("sa_create_design", model="ind", config="MarkI-Beta",
+         factors={"Mu": [0.02, 0.1], "MuMax": [0.1, 0.3], "BetaBeta": [3, 8]},
+         samples=12, validation_samples=4)
+    assert call("sa_run_design", model="ind", config="MarkI-Beta")["ok"]
+    result = call("sa_analyze", model="ind", config="MarkI-Beta", variable="_s")
+    assert result["ok"], result
+    assert sorted(row["factor"] for row in result["sobol"]) == ["BetaBeta", "Mu", "MuMax"]
+    assert result["note"].startswith("analysed the first of ") and "_s" in result["note"]
+    assert "Linear" not in result["files"] and "_s-kriging" in result["files"]
+
+
+def test_constant_response_is_reported(container):
+    _, work = container
+    shutil.copytree(DATA / "linear", work / "const")
+    call("set_saved", model="const", config="Linear", names=["Z"])
+    # Z = 2a - 3b + 7 does not depend on c or n
+    call("sa_create_design", model="const", config="Linear",
+         factors={"c": [-1, 1], "n": [1, 9, "int"]}, samples=10, validation_samples=4)
+    assert call("sa_run_design", model="const", config="Linear")["ok"]
+    result = backend.call("sa_analyze", dict(model="const", config="Linear", variable="Z"))
+    assert result["ok"] is False and "does not vary over the design" in result["message"]
+
+
+def test_kriging_numerical_failure_is_explained(container):
+    """Industry with two binary integer factors and 24 LHS points: the points fall
+    on four lines and the Kriging covariance matrix is not positive definite."""
+    _, work = container
+    call("copy_model", source="SantAnna/Industry", name="bin")
+    call("set_run_settings", model="bin", config="MarkI-Beta", steps=40)
+    design = call("sa_create_design", model="bin", config="MarkI-Beta",
+                  factors={"EntrReg": [1, 2, "int"], "MktReg": [0, 1, "int"], "Mu": [0.04, 0.06]},
+                  samples=24, validation_samples=4)
+    assert "EntrReg has 2 levels for 24 samples" in design["warning"]
+    assert call("sa_run_design", model="bin", config="MarkI-Beta")["ok"]
+    result = call("sa_analyze", model="bin", config="MarkI-Beta", variable="HHI")
+    assert result["ok"] is False, result
+    assert "not positive definite" in result["message"] and "leading minor" in result["r_message"]

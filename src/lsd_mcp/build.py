@@ -174,11 +174,17 @@ def equation_file(model_dir: Path):
 
 
 def _model_inputs(model_dir: Path, eq: Path) -> list:
+    """Everything a change in which must trigger a rebuild: the equation file,
+    FUN_EXTRA, and every source or header in the folder (the equation file may
+    #include them)."""
     files = [eq]
     for name in read_model_options(model_dir).get("FUN_EXTRA", "").split():
         extra = model_dir / name
-        if extra.is_file():
+        if extra.is_file() and extra not in files:
             files.append(extra)
+    for path in sorted(model_dir.iterdir()):
+        if path.is_file() and path.suffix in (".cpp", ".h", ".hpp") and path not in files:
+            files.append(path)
     return files
 
 
@@ -204,16 +210,58 @@ def model_build_dir(root: Path, model_dir: Path) -> Path:
     return build_dir(root) / "models" / (model_dir.name + "-" + key)
 
 
-def parse_errors(text: str, limit: int = 30) -> list:
-    """Pick compiler diagnostics (file:line: message) out of the output."""
-    pattern = re.compile(r"^(.+?):(\d+)(?::\d+)?: (?:fatal )?error: (.*)$")
+ERROR_LINE = re.compile(r"^(.+?):(\d+)(?::\d+)?: (?:fatal )?error: (.*)$")
+NOTE_LINE = re.compile(r"^(.+?):(\d+)(?::\d+)?: note: (.*)$")
+
+
+def _under(path: str, folder: Path, base: Path) -> bool:
+    try:
+        (base / path).resolve().relative_to(folder.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _equation_location(lines, start, src_dir, base):
+    """First note after an error that points outside LSD's own headers.
+
+    g++ writes "file:line:col: note: in expansion of macro 'X'" for the place
+    in the equation file; clang writes "note: expanded from macro 'X'" for the
+    macro and a plain error line at the use site, so it rarely needs this.
+    """
+    for line in lines[start + 1:]:
+        line = line.strip()
+        if ERROR_LINE.match(line):
+            break
+        note = NOTE_LINE.match(line)
+        if note and not _under(note.group(1), src_dir, base):
+            return "%s:%s, %s" % (Path(note.group(1)).name, note.group(2), note.group(3))
+    return None
+
+
+def parse_errors(text: str, limit: int = 30, src_dir: Path = None, base: Path = None) -> list:
+    """Pick compiler diagnostics (file:line: message) out of the output.
+
+    Errors located in LSD's headers (src_dir) get the equation-file location
+    from the compiler's notes, or a hint if the compiler gives none.
+    """
+    lines = text.splitlines()
     errors = []
-    for line in text.splitlines():
-        match = pattern.match(line.strip())
+    for index, raw in enumerate(lines):
+        line = raw.strip()
+        match = ERROR_LINE.match(line)
         if match:
-            errors.append("%s:%s: %s" % (Path(match.group(1)).name, match.group(2), match.group(3)))
+            entry = "%s:%s: %s" % (Path(match.group(1)).name, match.group(2), match.group(3))
+            if src_dir is not None and _under(match.group(1), src_dir, base or Path(".")):
+                where = _equation_location(lines, index, src_dir, base or Path("."))
+                if where:
+                    entry += " [in equation file: %s]" % where
+                else:
+                    entry += (" [inside LSD's macros; usually a syntax error just before "
+                              "the reported EQUATION or RESULT]")
+            errors.append(entry)
         elif "undefined reference" in line or "ld: " in line or "Undefined symbols" in line:
-            errors.append(line.strip())
+            errors.append(line)
         if len(errors) >= limit:
             break
     if not errors and text.strip():
@@ -244,7 +292,7 @@ def compile_model(root: Path, model_dir: Path) -> ModelBuild:
     command += flags + ["-c", eq, "-o", model_obj]
     result = run(command, cwd=model_dir, timeout=900)
     if not result.ok:
-        return ModelBuild(False, time.time() - started, errors=parse_errors(result.output))
+        return ModelBuild(False, time.time() - started, errors=parse_errors(result.output, 30, root / "src", model_dir))
     link = [cc, model_obj]
     for name in ENGINE:
         link.append(objects / (name + ".o"))

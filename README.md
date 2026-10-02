@@ -70,9 +70,20 @@ it.
 
 ## Limits
 
+- Kriging can fail with "the leading minor ... is not positive" (covariance matrix
+  not positive definite), typically when design points nearly coincide, for example
+  integer factors with few levels. `sa_analyze` explains this; try the polynomial
+  meta-model or more spread-out points. `sa_create_design` warns about integer
+  factors with fewer levels than samples / 4.
 - LSD's polynomial meta-model weights design points by mean/SD of the response
   and fails when a point has a negative mean (a bug in LSDsensitivity, not worked
   around here). `sa_analyze` says so; use `metamodel="kriging"`.
+- LSD's polynomial meta-model also needs at least two factors (its package builds
+  a broken formula for one); `sa_analyze` refuses it for a single factor.
+- LSD cannot load a configuration with `SEED` below 1 (27 shipped examples have
+  `SEED 0`); the tools say so and `set_run_settings(seed=1)` fixes it.
+- Totals files (`.tot.gz`) have no header and one row per run; `read_results`
+  does not read them and names the `.res.gz` files instead.
 - Version 1. Sensitivity analysis covers Latin hypercube and uniform random
   designs with a Kriging or polynomial meta-model. Elementary effects and LSD's
   NOLH tables come in a later version.

@@ -11,11 +11,13 @@ import os
 import random
 import re
 import shutil
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from . import build, config, lsdfile, lsdsource, models
+from . import run as results_reader
 from .runner import run
 
 R_SCRIPT = Path(__file__).with_name("sa_analysis.R")
@@ -120,6 +122,7 @@ def create_design(model, config_file, factors, samples, method="lhs",
         raise models.ModelError("validation_samples must be at least 1 (the analysis needs them)")
     if runs_per_point < 2:
         raise models.ModelError("runs_per_point must be at least 2 (LSD's R package refuses fewer)")
+    models.require_loadable(path)
     parsed = lsdfile.parse(path)
     spec = _parse_factors(parsed, factors)
     existing = _design_files(folder, name)
@@ -155,7 +158,7 @@ def create_design(model, config_file, factors, samples, method="lhs",
         text = lsdfile.set_settings(text, SIM_NUM=runs_per_point,
                                     SEED=seed + (k - 1) * runs_per_point)
         lsdfile.write_text(folder / ("%s_%d.lsd" % (name, k)), text)
-    return {
+    result = {
         "sensitivity_file": name + ".sa",
         "design_table": design_csv,
         "validation_table": valid_csv,
@@ -164,6 +167,24 @@ def create_design(model, config_file, factors, samples, method="lhs",
         "validation_points": validation_samples,
         "runs_per_point": runs_per_point,
     }
+    warnings = coarse_integer_warnings(spec, samples)
+    if warnings:
+        result["warning"] = " ".join(warnings)
+    return result
+
+
+def coarse_integer_warnings(spec, samples: int) -> list:
+    """Integer factors with few levels collapse the Latin hypercube onto those
+    levels (rule of thumb: fewer levels than samples / 4)."""
+    warnings = []
+    for name, low, high, is_int in spec:
+        levels = int(high) - int(low) + 1
+        if is_int and levels < samples / 4:
+            warnings.append(
+                "Integer factor %s has %d levels for %d samples: the Latin hypercube collapses "
+                "onto those levels, which can make the Kriging fit fail (rule of thumb)."
+                % (name, levels, samples))
+    return warnings
 
 
 def find_design(folder: Path, name: str) -> dict:
@@ -199,6 +220,8 @@ def _results_present(folder: Path, name: str, k: int) -> bool:
 
 
 def run_design(model, config_file, threads=None, timeout_s=3600) -> dict:
+    if timeout_s < 1:
+        raise models.ModelError("timeout_s must be at least 1, got %s" % timeout_s)
     folder = models.resolve_writable(model)
     name = models.config_name(config_file)
     design = find_design(folder, name)
@@ -263,7 +286,27 @@ def _read_csv(path: Path) -> list:
         return list(csv.DictReader(handle))
 
 
-def analyze(model, config_file, variable, metamodel="kriging", ini_drop=0, n_keep=-1) -> dict:
+def design_factor_count(design: dict) -> int:
+    with open(design["design"], newline="") as handle:
+        return len(next(csv.reader(handle)))
+
+
+def check_window(folder: Path, name: str, design: dict, ini_drop: int, n_keep: int):
+    """ini_drop and n_keep must fit inside MAX_STEP of the design's configurations."""
+    parsed = lsdfile.parse(folder / ("%s_%d.lsd" % (name, design["first"])))
+    max_step = int(parsed.settings.get("MAX_STEP", "0"))
+    if ini_drop < 0 or ini_drop >= max_step:
+        raise models.ModelError("ini_drop must be at least 0 and below MAX_STEP (%d), got %s"
+                                % (max_step, ini_drop))
+    if n_keep != -1 and n_keep < 1:
+        raise models.ModelError("n_keep must be -1 (all) or at least 1, got %s" % n_keep)
+    if n_keep != -1 and ini_drop + n_keep > max_step:
+        raise models.ModelError("ini_drop + n_keep (%d) exceeds MAX_STEP (%d)"
+                                % (ini_drop + n_keep, max_step))
+
+
+def analyze(model, config_file, variable, metamodel="kriging", ini_drop=0,
+            n_keep=-1, r_seed=1) -> dict:
     folder = models.resolve_writable(model)
     path = models.config_path(folder, config_file, model)
     name = models.config_name(config_file)
@@ -275,6 +318,11 @@ def analyze(model, config_file, variable, metamodel="kriging", ini_drop=0, n_kee
     if not element.saved:
         raise models.ModelError("%r is not saved; use set_saved first and rerun the design" % variable)
     design = find_design(folder, name)
+    if metamodel == "polynomial" and design_factor_count(design) < 2:
+        raise models.ModelError(
+            "LSD's polynomial meta-model needs at least two factors (its package builds a "
+            "broken formula for one); use metamodel='kriging'")
+    check_window(folder, name, design, ini_drop, n_keep)
     missing = 0
     for k in range(design["first"], design["last"] + 1):
         if not _results_present(folder, name, k):
@@ -285,29 +333,99 @@ def analyze(model, config_file, variable, metamodel="kriging", ini_drop=0, n_kee
     if not status["rscript"] or not status["lsdsensitivity"]:
         return {"ok": False, "message": status["message"]}
 
-    out = folder / (name + "_sa")
-    if out.exists():
-        shutil.rmtree(out)
-    command = [config.rscript(), R_SCRIPT, folder, name, variable, metamodel,
-               int(ini_drop), int(n_keep), design["design"], design["validation"], out]
-    result = run(command, cwd=folder, timeout=3600)
-    error_file = out / "error.txt"
-    if error_file.is_file():
-        r_message = error_file.read_text().strip()[:1500]
-        if "negative weights" in r_message:
-            return {"ok": False,
-                    "message": ("LSD's polynomial meta-model weights each design point by "
-                                "mean/SD of the response and stops when a point has a negative "
-                                "mean. Use metamodel='kriging', or a response whose mean is "
-                                "positive at every design point."),
-                    "r_message": r_message}
-        return {"ok": False, "message": r_message}
-    if not result.ok or not (out / "sobol.csv").is_file():
-        return {"ok": False, "message": "R failed", "output_tail": result.output[-1500:]}
+    # R writes into a scratch folder; <config>_sa/ is only touched on success.
+    with tempfile.TemporaryDirectory(prefix="lsd-sa-") as scratch:
+        scratch = Path(scratch)
+        command = [config.rscript(), R_SCRIPT, folder, name, variable, metamodel,
+                   int(ini_drop), int(n_keep), design["design"], design["validation"],
+                   scratch, int(r_seed)]
+        result = run(command, cwd=folder, timeout=3600)
+        error_file = scratch / "error.txt"
+        if error_file.is_file():
+            return _r_failure(error_file.read_text().strip()[:1500])
+        if not result.ok or not (scratch / "sobol.csv").is_file():
+            return {"ok": False, "message": "R failed", "output_tail": result.output[-1500:]}
+        out = folder / (name + "_sa") / analysis_folder(variable, metamodel)
+        out.mkdir(parents=True, exist_ok=True)
+        for filename in ("fit.csv", "sobol.csv"):
+            shutil.copyfile(scratch / filename, out / filename)
+
     fit = _read_csv(out / "fit.csv")[0]
+    quality = float(fit["value"])
     sobol = []
     for row in _read_csv(out / "sobol.csv"):
         sobol.append({"factor": row["factor"], "direct": float(row["direct"]),
                       "interactions": float(row["interactions"])})
-    return {"ok": True, "metamodel": metamodel, "fit": {fit["metric"]: float(fit["value"])},
-            "sobol": sobol, "files": "%s_sa/fit.csv, %s_sa/sobol.csv" % (name, name)}
+    relative = "%s_sa/%s" % (name, out.name)
+    answer = {"ok": True, "metamodel": metamodel, "fit": {fit["metric"]: quality},
+              "sobol": sobol, "files": "%s/fit.csv, %s/sobol.csv" % (relative, relative)}
+    warnings = []
+    if quality < 0.5:
+        warnings.append("%s is %.2f: the meta-model does not predict the out-of-sample "
+                        "points well, so the Sobol indices are not reliable "
+                        "(0.5 is a rule of thumb, not an LSD threshold)" % (fit["metric"], quality))
+    if factors_not_separated(sobol):
+        warnings.append("every factor has the same direct and interaction values: the "
+                        "meta-model could not separate the factors, so the indices are "
+                        "not meaningful")
+    if warnings:
+        answer["warning"] = "; ".join(warnings)
+    note = column_note(folder, name, variable, design)
+    if note:
+        answer["note"] = note
+    return answer
+
+
+def analysis_folder(variable: str, metamodel: str) -> str:
+    """Folder name <variable>-<metamodel>, safe for any file system."""
+    return "%s-%s" % (re.sub(r"[^A-Za-z0-9_.-]", "_", variable), metamodel)
+
+
+def factors_not_separated(sobol: list) -> bool:
+    if len(sobol) < 2:
+        return False
+    for row in sobol[1:]:
+        if abs(row["direct"] - sobol[0]["direct"]) > 1e-9:
+            return False
+        if abs(row["interactions"] - sobol[0]["interactions"]) > 1e-9:
+            return False
+    return True
+
+
+def column_note(folder: Path, name: str, variable: str, design: dict):
+    """LSD reuses labels for objects created during a run, so a variable can
+    have several columns. LSDinterface's select.colnames.lsd (select.R lines
+    65-69, instance = 1) takes the first column of that name in the file."""
+    path = folder / _expected_results(folder, name, design["first"])[0]
+    if not path.is_file():
+        return None
+    with results_reader.open_result(path) as handle:
+        columns = results_reader.read_header(handle)
+    matching = [column for column in columns if column[0] == variable]
+    if len(matching) < 2:
+        return None
+    return ("analysed the first of %d columns named %s (LSD's R package takes the first "
+            "column of that name in the file; in %s that is '%s')"
+            % (len(matching), variable, path.name, results_reader.span_label(matching[0])))
+
+
+def _r_failure(r_message: str) -> dict:
+    if "leading minor" in r_message:
+        return {"ok": False,
+                "message": ("The Kriging fit failed numerically (the covariance matrix is not "
+                            "positive definite). This usually means design points nearly "
+                            "coincide (integer factors with few levels, very narrow ranges) or "
+                            "the response is nearly constant or erratic. Try "
+                            "metamodel='polynomial', more spread-out points (wider ranges, "
+                            "more levels), or fewer points."),
+                "r_message": r_message}
+    if "does not vary over the design" in r_message:
+        return {"ok": False, "message": r_message.split("failed: ", 1)[-1]}
+    if "negative weights" in r_message:
+        return {"ok": False,
+                "message": ("LSD's polynomial meta-model weights each design point by "
+                            "mean/SD of the response and stops when a point has a negative "
+                            "mean. Use metamodel='kriging', or a response whose mean is "
+                            "positive at every design point."),
+                "r_message": r_message}
+    return {"ok": False, "message": r_message}

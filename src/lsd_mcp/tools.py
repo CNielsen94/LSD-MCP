@@ -33,13 +33,14 @@ def list_models(group: str = "models"):
 
 
 @guarded
-def read_equations(model: str, group: str = "models"):
-    return models.read_equations(model, group)
+def read_equations(model: str, group: str = "models", file: str = None):
+    return models.read_equations(model, group, file)
 
 
 @guarded
-def describe_configuration(model: str, config: str, group: str = "models") -> dict:
-    return models.describe_configuration(model, config, group)
+def describe_configuration(model: str, config: str, group: str = "models",
+                           object: str = None, detail: str = "full") -> dict:
+    return models.describe_configuration(model, config, group, object, detail)
 
 
 @guarded
@@ -48,8 +49,8 @@ def copy_model(source: str, name: str, source_group: str = "examples") -> dict:
 
 
 @guarded
-def write_equations(model: str, content: str) -> dict:
-    return models.write_equations(model, content)
+def write_equations(model: str, content: str, file: str = None) -> dict:
+    return models.write_equations(model, content, file)
 
 
 @guarded
@@ -106,8 +107,8 @@ def sa_run_design(model: str, config: str, threads: int = None,
 
 @guarded
 def sa_analyze(model: str, config: str, variable: str, metamodel: str = "kriging",
-               ini_drop: int = 0, n_keep: int = -1) -> dict:
-    return sa.analyze(model, config, variable, metamodel, ini_drop, n_keep)
+               ini_drop: int = 0, n_keep: int = -1, r_seed: int = 1) -> dict:
+    return sa.analyze(model, config, variable, metamodel, ini_drop, n_keep, r_seed)
 
 
 TOOLS = {

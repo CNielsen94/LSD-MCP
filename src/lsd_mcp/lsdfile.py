@@ -36,6 +36,7 @@ class LsdObject:
     parent: str = None
     instances: int = 0  # summed over all parent instances
     blocks: int = 0  # number of parent instances (one count each)
+    computed: bool = True  # False when the Object line says N instead of C
     elements: list = field(default_factory=list)
 
 
@@ -92,7 +93,8 @@ def _parse_data(lines, config):
     for line in lines:
         if line.startswith("Object:"):
             fields = line.rstrip("\r\n").split("\t")
-            name = fields[0].split()[1]
+            head = fields[0].split()
+            name = head[1]
             # one count per instance of the parent object
             counts = []
             for text in fields[1:]:
@@ -102,6 +104,8 @@ def _parse_data(lines, config):
             if current is None:
                 current = LsdObject(name)
                 config.objects[name] = current
+            if len(head) > 2 and head[2] == "N":
+                current.computed = False
             current.instances += sum(counts)
             current.blocks += len(counts)
             continue
@@ -118,9 +122,12 @@ def _parse_data(lines, config):
             current.elements.append(element)
         element.lags = int(lags)
         element.flag = flag
+        head = line.split("\t")[0].split()
+        if len(head) >= 7:  # name lags save init debug plot
+            element.debug, element.plot = head[5], head[6]
         fields = line.rstrip("\r\n").split("\t")[1:]
         for text in fields:
-            if text != "":
+            if text != "" and not text.startswith("<"):  # skip "<upd: ...>" update data
                 element.values.append(_number(text))
 
 
