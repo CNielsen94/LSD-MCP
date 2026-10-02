@@ -1,0 +1,57 @@
+	
+Label Root
+{
+	Son: Unit
+	Label Unit
+	{
+		Param: r
+		Var: X
+
+	}
+
+
+}
+
+
+DATA
+
+Object: Root C	1
+
+Object: Unit C	1
+Param: r 0 n + n n	0.7
+Var: X 1 s + n n	5
+
+SIM_NUM 1
+SEED 1
+MAX_STEP 10
+EQUATION fun_Decay.cpp
+MODELREPORT report_Decay.html
+
+DESCRIPTION
+
+Object_Root
+(no description available)
+END_DESCRIPTION
+
+Object_Unit
+(no description available)
+END_DESCRIPTION
+
+Parameter_r
+(no description available)
+END_DESCRIPTION
+
+Variable_X
+(no description available)
+END_DESCRIPTION
+
+
+DOCUOBSERVE
+
+END_DOCUOBSERVE
+
+
+DOCUINITIAL
+
+END_DOCUINITIAL
+

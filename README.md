@@ -37,6 +37,7 @@ Inspect: `lsd_status`, `list_models`, `read_equations`, `describe_configuration`
 Edit: `copy_model`, `write_equations`, `set_values`, `set_run_settings`, `set_saved`.
 Compile and run: `compile_model`, `run_configuration`, `read_results`.
 Sensitivity analysis: `sa_create_design`, `sa_run_design`, `sa_analyze`.
+`set_values` and the factors of `sa_create_design` take `"Name -k"` for the k-th lag of a variable.
 
 `sa_create_design` makes one of four designs. `lhs` and `random` are sampled in
 Python and written through `lsd_confgen`. `nolh` (near-orthogonal Latin
@@ -109,8 +110,11 @@ it.
   does not read them and names the `.res.gz` files instead.
 - Sensitivity analysis covers Latin hypercube, uniform random and NOLH designs
   with a Kriging or polynomial meta-model, and elementary effects designs.
-  `factors` takes parameters only; LSD's interface also accepts the initial value
-  of a variable as a factor (reachable only through a `.sa` file made there).
+- Factors are parameters or the initial values of variables (`"X"` is the first
+  lag, `"X -2"` the second). One element can be one factor only: LSD's design
+  table names a factor by its label alone. In `lsd_confgen`'s own files a negative lag
+  always means the first lag (`confgen.cpp`, `change_configuration`), so the tools
+  send it the positive number it does honour.
 - An elementary effects design made on macOS differs from one made on Linux
   (including in Docker) for the same seed, because LSD shuffles trajectories with
   the C++ standard library's `shuffle`, which differs between libc++ and

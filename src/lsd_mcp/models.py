@@ -422,6 +422,39 @@ def _check_names(parsed, names, what="element"):
         raise ModelError("unknown %s(s): %s" % (what, ", ".join(unknown)))
 
 
+LAG_KEY = re.compile(r"^(\S+)(?:\s+(-\d+))?$")
+
+
+def split_lag_key(key: str):
+    """'Name' -> ('Name', None); 'Name -2' -> ('Name', 2): the syntax of
+    lsd_confgen's CSV files (a space and a negative lag, -1 the first lag)."""
+    match = LAG_KEY.match(key.strip()) if isinstance(key, str) else None
+    if not match:
+        raise ModelError("%r: write an element name, or a name, a space and a negative lag "
+                         "such as \"Name -2\"" % (key,))
+    lag = None if match.group(2) is None else -int(match.group(2))
+    if lag is not None and lag < 1:
+        raise ModelError("%r: the lag must be a negative integer (-1 is the first lag)" % key)
+    return match.group(1), lag
+
+
+def check_lag(element, key: str, lag):
+    """An explicit lag needs a variable that has that many lags."""
+    if lag is None:
+        return
+    if element.kind != "Var":
+        raise ModelError("%r: %s is a %s, which has no lags" % (key, element.name, element.kind.lower()))
+    if lag > element.lags:
+        raise ModelError("%r: variable %s has %d lag(s)" % (key, element.name, element.lags))
+
+
+def confgen_name(name: str, lag) -> str:
+    """Row name for lsd_confgen. Its file header says negative lags, but its code
+    (confgen.cpp, change_configuration) sends every negative lag to the first
+    lag and takes a positive number k as the k-th lag."""
+    return name if lag is None else "%s %d" % (name, lag)
+
+
 def set_values(model: str, config_file: str, values: dict, new_config: str = None) -> dict:
     folder = resolve_writable(model)
     path = config_path(folder, config_file, model)
@@ -429,9 +462,18 @@ def set_values(model: str, config_file: str, values: dict, new_config: str = Non
         raise ModelError("values is empty")
     require_loadable(path)
     parsed = lsdfile.parse(path)
-    _check_names(parsed, values)
-    names = list(values)
-    numbers = [values[name] for name in names]
+    names = []
+    seen = set()
+    for key in values:
+        name, lag = split_lag_key(key)
+        _check_names(parsed, [name])
+        check_lag(parsed.element(name), key, lag)
+        if name in seen:
+            raise ModelError("%s appears twice (LSD sets one lag of an element per call); "
+                             "call set_values again for the other lag" % name)
+        seen.add(name)
+        names.append(confgen_name(name, lag))
+    numbers = [values[key] for key in values]
     original = lsdfile.read_text(path)
     root = lsdsource.lsd_root()
     text = generate_configurations(root, path, names, [numbers])[0]

@@ -68,7 +68,7 @@ def test_integer_factor_and_validation(linear, lsd_root):
     with pytest.raises(models.ModelError):
         sa.create_design("linear", "Linear", {"a": [0, 1]}, samples=5, runs_per_point=1)
     with pytest.raises(models.ModelError):
-        sa.create_design("linear", "Linear", {"Z": [0, 1]}, samples=5)
+        sa.create_design("linear", "Linear", {"nope": [0, 1]}, samples=5)
     sa.create_design("linear", "Linear", {"n": [1, 9, "int"], "a": [0, 1]}, samples=8,
                      validation_samples=3, method="random")
     assert "n 0 2 i: 1 9" in (linear / "Linear.sa").read_text()

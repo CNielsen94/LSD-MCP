@@ -86,7 +86,11 @@ def set_values(model: str, config: str, values: dict[str, float],
                new_config: str | None = None) -> dict:
     """Set element values in a configuration, using LSD's own lsd_confgen.
     `values` maps element name to a number; every instance of the element gets
-    the value (for variables, the value at lag -1). Writes new_config.lsd, or
+    the value. A variable's name sets its initial value at the first lag;
+    "Name -2", "Name -3" ... (name, space, negative lag) set the second, third
+    ... lag ("Name -1" is the first); a lag beyond the variable's lags, or on a
+    parameter, is an error, and one element can appear once per call.
+    Writes new_config.lsd, or
     replaces config.lsd (the old file is kept as .bak). The result says
     whether an existing file was replaced (replaced, backup)."""
     return backend.call("set_values", locals())
@@ -160,8 +164,15 @@ def sa_create_design(model: str, config: str, factors: dict[str, list[float | st
     <config>_1_N.csv (and for meta-model designs the out-of-sample table
     <config>_N+1_N+V.csv), numbered configurations <config>_1.lsd ..., and
     <config>_design.json (our file: method and parameters).
-    factors maps a parameter name to [min, max], or [min, max, "int"] for
-    integers. method:
+    factors maps an element to [min, max], or [min, max, "int"] for integers.
+    An element is a parameter name, or a variable name for the variable's
+    initial value at its first lag, or "Name -2", "Name -3" ... (name, space,
+    negative lag) for the initial value at that lag. Functions, variables with
+    no lags and lags beyond the variable's lags are refused, and an element can
+    be a factor only once (LSD's design table names a factor by its label, so
+    the result files and the analysis tables show the plain name, for example
+    "X"; the design file <config>_design.json records each factor's lag, 0 for
+    a parameter). method:
     'lhs' (Latin hypercube) or 'random': `samples` points (required, at least 2)
     plus validation_samples uniform out-of-sample points, for a Kriging or
     polynomial meta-model.

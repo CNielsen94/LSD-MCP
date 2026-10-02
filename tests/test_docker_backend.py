@@ -321,3 +321,82 @@ def test_nolh_design_kriging_gives_the_direct_effects(container):
     assert direct["b"] == pytest.approx(9 / 13, abs=0.03)
     bad = backend.call("sa_analyze", dict(model="lin_nolh", config="Linear", variable="Z", metamodel="ee"))
     assert "method 'nolh'" in bad["error"]
+
+
+# --- initial values of variables as factors ---------------------------------------
+
+DECAY_FACTORS = {"r": [0.5, 0.9], "X": [1, 10]}  # X is the initial value of the variable X
+
+
+def decay_model(work, name):
+    shutil.copytree(DATA / "decay", work / name)
+    call("set_saved", model=name, config="Decay", names=["X"])
+
+
+def test_decay_elementary_effects_see_the_initial_value(container):
+    """X(t) = r X(t-1), analysed on the mean of X over 10 steps. Both a higher r and
+    a higher initial X raise that mean, so both elementary effects must be clearly
+    positive; the initial value has the larger effect (its range is 9, and each unit
+    of it adds about the mean of r^t to every later step). The table must name the
+    factors r and X (LSD's design table names a factor by its label, lag dropped)."""
+    _, work = container
+    decay_model(work, "dec_ee")
+    design = call("sa_create_design", model="dec_ee", config="Decay", factors=DECAY_FACTORS,
+                  method="ee", seed=2)
+    assert design["points"] == 30  # 10 trajectories x (2 factors + 1)
+    assert (work / "dec_ee" / "Decay.sa").read_text().splitlines() == ["r 0 2 f: 0.5 0.9", "X -1 2 f: 1 10"]
+    assert call("sa_run_design", model="dec_ee", config="Decay")["ok"]
+    result = call("sa_analyze", model="dec_ee", config="Decay", variable="X")
+    assert result["ok"], result
+    effects = {row["factor"]: row for row in result["effects"]}
+    assert sorted(effects) == ["X", "r"]
+    for row in effects.values():
+        assert row["mu"] > 0.3 and row["mu_star"] > 0.3, row
+    assert effects["X"]["mu_star"] > effects["r"]["mu_star"]
+
+
+@pytest.mark.parametrize("method", ["nolh", "lhs"])
+def test_decay_kriging_runs_and_names_both_factors(container, method):
+    """A Kriging analysis of the same model for a NOLH design and for a Latin hypercube
+    design written through lsd_confgen (the initial value goes in as "X 1"). It must run,
+    return the factors r and X, and give both a clearly positive direct effect: the mean
+    of X depends on both."""
+    _, work = container
+    name = "dec_" + method
+    decay_model(work, name)
+    options = dict(samples=30) if method == "lhs" else {}
+    call("sa_create_design", model=name, config="Decay", factors=DECAY_FACTORS, method=method,
+         validation_samples=10, seed=1, **options)
+    assert call("sa_run_design", model=name, config="Decay")["ok"]
+    result = call("sa_analyze", model=name, config="Decay", variable="X")
+    assert result["ok"], result
+    direct = {row["factor"]: row["direct"] for row in result["sobol"]}
+    assert sorted(direct) == ["X", "r"]
+    assert direct["r"] > 0.05 and direct["X"] > 0.05, direct
+    assert result["fit"]["Q2"] > 0.5
+
+
+def test_public_tool_reproduces_nolh_mc_and_ee_on_linux(container):
+    """sa_create_design with the five reference factors (four parameters and the initial
+    value of Z) gives the files LSD's interface wrote, apart from the SIM_NUM and SEED
+    lines the tool sets for each point, and the same Linear.sa."""
+    _, work = container
+    factors = {"a": [0, 1], "b": [2, 3], "c": [-1, 1], "n": [1, 9, "int"], "Z": [0, 10]}
+
+    def without_run_settings(path):
+        lines = path.read_text().splitlines(keepends=True)
+        return "".join(line for line in lines if not line.startswith(("SIM_NUM ", "SEED ")))
+
+    for folder, method, references in (("tool_nolh", "nolh", ["nolh_append", "nolh"]),
+                                       ("tool_ee", "ee", ["ee"])):
+        shutil.copytree(GUI / "baseline", work / folder)
+        (work / folder / "Linear.sa").unlink()
+        call("sa_create_design", model=folder, config="Linear", factors=factors, method=method, seed=1)
+        assert (work / folder / "Linear.sa").read_bytes() == (GUI / "baseline" / "Linear.sa").read_bytes()
+        for reference in references:
+            for ref_file in sorted((GUI / reference).iterdir()):
+                made = work / folder / ref_file.name
+                if ref_file.suffix == ".lsd":
+                    assert without_run_settings(made) == without_run_settings(ref_file), ref_file.name
+                else:
+                    assert made.read_bytes() == ref_file.read_bytes(), ref_file.name

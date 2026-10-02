@@ -32,25 +32,64 @@ R_SCRIPT = Path(__file__).with_name("sa_analysis.R")
 
 
 def _parse_factors(parsed, factors: dict) -> list:
-    """Return [(name, low, high, is_int)] after checking every entry."""
+    """Return [(name, lag, low, high, is_int)] after checking every entry.
+
+    A key is a parameter name (lag 0), a variable name (its first lag), or
+    "Name -k" (the k-th lag of a variable, as in lsd_confgen's CSV files); lag
+    is 1 for the first lag. LSD's design table names a factor by its label only,
+    so one element cannot be two factors.
+    """
     if not factors:
         raise models.ModelError("factors is empty")
     found = []
-    for name, spec in factors.items():
+    seen = set()
+    for key, spec in factors.items():
+        name, lag = models.split_lag_key(key)
         element = parsed.element(name)
         if element is None:
             raise models.ModelError("unknown element %r" % name)
-        if element.kind != "Param":
-            raise models.ModelError("factor %r is a %s; only parameters can be factors" % (name, element.kind))
+        if element.kind == "Func":
+            raise models.ModelError("factor %r is a function; only parameters and variables' "
+                                    "initial values can be factors" % name)
+        if element.kind == "Var" and element.lags < 1:
+            raise models.ModelError("factor %r is a variable with no lags, so it has no initial "
+                                    "value to vary" % name)
+        models.check_lag(element, key, lag)
+        if element.kind == "Param":
+            lag = 0
+        elif lag is None:
+            lag = 1
+        if name in seen:
+            raise models.ModelError("factor %r appears twice: LSD names a factor by its label "
+                                    "only, so one element can be one factor" % name)
+        seen.add(name)
         if not isinstance(spec, (list, tuple)) or len(spec) not in (2, 3):
-            raise models.ModelError("factor %r: give [min, max] or [min, max, \"int\"]" % name)
+            raise models.ModelError("factor %r: give [min, max] or [min, max, \"int\"]" % key)
         low, high = float(spec[0]), float(spec[1])
         if not low < high:
-            raise models.ModelError("factor %r: min must be below max" % name)
+            raise models.ModelError("factor %r: min must be below max" % key)
         is_int = len(spec) == 3
         if is_int and spec[2] != "int":
-            raise models.ModelError("factor %r: third entry must be \"int\"" % name)
-        found.append((name, low, high, is_int))
+            raise models.ModelError("factor %r: third entry must be \"int\"" % key)
+        found.append((name, lag, low, high, is_int))
+    return found
+
+
+def sa_line(name, lag, low, high, is_int) -> str:
+    """A line of the .sa file: name, lag (0 for a parameter, -k for the k-th lag
+    of a variable; load_sensitivity in file.cpp stores abs(lag) - 1), number of
+    values, type (f float, i integer), min, max."""
+    return "%s %d 2 %s %s %s" % (name, -lag if lag else 0, "i:" if is_int else "f:",
+                                 format(low, ".15g"), format(high, ".15g"))
+
+
+def sa_factors(path: Path) -> list:
+    """[{"name", "lag"}] of an existing .sa file (lag 0 for a parameter)."""
+    found = []
+    for line in path.read_text().splitlines():
+        words = line.split()
+        if len(words) >= 2 and not words[0].startswith("#"):
+            found.append({"name": words[0], "lag": abs(int(words[1]))})
     return found
 
 
@@ -79,7 +118,7 @@ def sample_points(factors, count: int, method: str, rng) -> list:
     points = []
     for i in range(count):
         point = []
-        for f, (name, low, high, is_int) in enumerate(factors):
+        for f, (name, lag, low, high, is_int) in enumerate(factors):
             point.append(_scale(units[f][i], low, high, is_int))
         points.append(point)
     return points
@@ -213,11 +252,7 @@ def create_design(model, config_file, factors, samples=None, method="lhs",
     spec = _parse_factors(parsed, factors)
     _clear_design(folder, name, overwrite, keep_sa=False)
 
-    # .sa: name, lag, number of values, type (f: float, i: integer), min, max
-    sa_lines = []
-    for (fname, low, high, is_int) in spec:
-        sa_lines.append("%s 0 2 %s %s %s" % (fname, "i:" if is_int else "f:",
-                                            format(low, ".15g"), format(high, ".15g")))
+    sa_lines = [sa_line(*item) for item in spec]
     (folder / (name + ".sa")).write_text("\n".join(sa_lines) + "\n")
 
     if method in ("nolh", "ee"):
@@ -237,7 +272,8 @@ def create_design(model, config_file, factors, samples=None, method="lhs",
     rng = random.Random(seed)
     design = sample_points(spec, samples, method, rng)
     validation = sample_points(spec, validation_samples, "random", rng)
-    names = [item[0] for item in spec]
+    names = [item[0] for item in spec]  # the design table names a factor by its label
+    confgen_names = [item[0] if not item[1] else models.confgen_name(item[0], item[1]) for item in spec]
     total = samples + validation_samples
     design_csv = "%s_1_%d.csv" % (name, samples)
     valid_csv = "%s_%d_%d.csv" % (name, samples + 1, total)
@@ -246,7 +282,7 @@ def create_design(model, config_file, factors, samples=None, method="lhs",
 
     original = lsdfile.read_text(path)
     columns = design + validation
-    texts = models.generate_configurations(lsdsource.lsd_root(), path, names, columns)
+    texts = models.generate_configurations(lsdsource.lsd_root(), path, confgen_names, columns)
     for k, text in enumerate(texts, start=1):
         text = lsdfile.restore_equation_line(text, original)
         text = lsdfile.set_settings(text, SIM_NUM=runs_per_point,
@@ -254,7 +290,8 @@ def create_design(model, config_file, factors, samples=None, method="lhs",
         lsdfile.write_text(folder / ("%s_%d.lsd" % (name, k)), text)
     design_info_path(folder, name).write_text(json.dumps(
         {"method": method, "points": samples, "validation_points": validation_samples,
-         "runs_per_point": runs_per_point, "seed": seed}, indent=2) + "\n")
+         "runs_per_point": runs_per_point, "seed": seed,
+         "factors": [{"name": item[0], "lag": item[1]} for item in spec]}, indent=2) + "\n")
     result = {
         "sensitivity_file": name + ".sa",
         "design_table": design_csv,
@@ -313,7 +350,8 @@ def design_from_sa(model, config_file, method, validation_samples=10, runs_per_p
         info.update({"levels": levels, "jump": jump, "trajectories": trajectories, "pool": pool})
     total = points + validation_points
     info.update({"points": points, "validation_points": validation_points,
-                 "runs_per_point": runs_per_point, "seed": seed})
+                 "runs_per_point": runs_per_point, "seed": seed,
+                 "factors": sa_factors(folder / (name + ".sa"))})
     _write_runs_and_seeds(folder, name, lsdfile.read_text(path), total, runs_per_point, seed)
     design_info_path(folder, name).write_text(json.dumps(info, indent=2) + "\n")
 
@@ -333,7 +371,7 @@ def coarse_integer_warnings(spec, samples: int) -> list:
     """Integer factors with few levels collapse the Latin hypercube onto those
     levels (rule of thumb: fewer levels than samples / 4)."""
     warnings = []
-    for name, low, high, is_int in spec:
+    for name, lag, low, high, is_int in spec:
         levels = int(high) - int(low) + 1
         if is_int and levels < samples / 4:
             warnings.append(
