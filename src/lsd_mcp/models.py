@@ -90,10 +90,10 @@ def config_name(config_file: str) -> str:
     return name
 
 
-def config_path(model_dir: Path, config_file: str) -> Path:
+def config_path(model_dir: Path, config_file: str, model: str = None) -> Path:
     path = model_dir / (config_name(config_file) + ".lsd")
     if not path.is_file():
-        raise ModelError("no configuration %s.lsd in %s" % (config_name(config_file), model_dir.name))
+        raise ModelError("no configuration %s.lsd in %s" % (config_name(config_file), model or model_dir.name))
     return path
 
 
@@ -184,7 +184,7 @@ def write_equations(model: str, content: str) -> dict:
 
 def describe_configuration(model: str, config_file: str, group: str = "models") -> dict:
     folder = resolve_model(model, group)
-    parsed = lsdfile.parse(config_path(folder, config_file))
+    parsed = lsdfile.parse(config_path(folder, config_file, model))
     objects = []
     for obj in parsed.objects.values():
         elements = []
@@ -270,7 +270,7 @@ def _check_names(parsed, names, what="element"):
 
 def set_values(model: str, config_file: str, values: dict, new_config: str = None) -> dict:
     folder = resolve_writable(model)
-    path = config_path(folder, config_file)
+    path = config_path(folder, config_file, model)
     if not values:
         raise ModelError("values is empty")
     parsed = lsdfile.parse(path)
@@ -292,7 +292,7 @@ def set_values(model: str, config_file: str, values: dict, new_config: str = Non
 def set_run_settings(model: str, config_file: str, runs: int = None,
                      seed: int = None, steps: int = None) -> dict:
     folder = resolve_writable(model)
-    path = config_path(folder, config_file)
+    path = config_path(folder, config_file, model)
     wanted = {}
     if runs is not None:
         wanted["SIM_NUM"] = int(runs)
@@ -308,7 +308,7 @@ def set_run_settings(model: str, config_file: str, runs: int = None,
 
 def set_saved(model: str, config_file: str, names, saved: bool = True) -> dict:
     folder = resolve_writable(model)
-    path = config_path(folder, config_file)
+    path = config_path(folder, config_file, model)
     names = list(names)
     if not names:
         raise ModelError("names is empty")

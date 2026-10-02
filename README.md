@@ -70,6 +70,9 @@ it.
 
 ## Limits
 
+- LSD's polynomial meta-model weights design points by mean/SD of the response
+  and fails when a point has a negative mean (a bug in LSDsensitivity, not worked
+  around here). `sa_analyze` says so; use `metamodel="kriging"`.
 - Version 1. Sensitivity analysis covers Latin hypercube and uniform random
   designs with a Kriging or polynomial meta-model. Elementary effects and LSD's
   NOLH tables come in a later version.

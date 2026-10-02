@@ -24,6 +24,9 @@ def status() -> dict:
         info["lsd_root"] = str(root)
     cc = build.compiler()
     info["compiler"] = cc or None
-    info["utilities_built"] = bool(root) and build.utilities_built(root)
+    if root is not None and build.utilities_built(root):
+        info["utilities"] = "built"
+    else:
+        info["utilities"] = "not built yet (built automatically on first use)"
     info.update(sa.rscript_status())
     return info

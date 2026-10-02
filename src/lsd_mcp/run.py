@@ -104,7 +104,7 @@ def summarise(path: Path) -> dict:
 def run_configuration(model: str, config_file: str, seed=None, runs=None,
                       threads=None, timeout_s=600) -> dict:
     folder = models.resolve_writable(model)
-    path = models.config_path(folder, config_file)
+    path = models.config_path(folder, config_file, model)
     root = lsdsource.lsd_root()
     built = build.compile_model(root, folder)
     if not built.ok:
@@ -133,7 +133,10 @@ def run_configuration(model: str, config_file: str, seed=None, runs=None,
     if reports:
         reports.sort(key=lambda name: (len(name), name))
         summary = summarise(folder / reports[0])
-    return {"ok": True, "seconds": seconds, "result_files": written, "first_run": summary}
+    info = {"ok": True, "seconds": seconds, "result_files": written, "first_run": summary}
+    if threads and runs and int(runs) > 1:
+        info["note"] = "runs in parallel: LSD writes no totals file in this mode"
+    return info
 
 
 def read_results(model: str, results_file: str, variables=None, start=None,
@@ -151,6 +154,11 @@ def read_results(model: str, results_file: str, variables=None, start=None,
             if variables and column[0] not in variables and label(column) not in variables:
                 continue
             chosen.append(index)
+        if variables and not chosen:
+            available = [label(column) for column in columns[:MAX_SERIES]]
+            raise models.ModelError(
+                "no series matched %s; available series (first %d of %d): %s"
+                % (list(variables), len(available), len(columns), ", ".join(available)))
         omitted = max(0, len(chosen) - MAX_SERIES)
         chosen = chosen[:MAX_SERIES]
         offset = columns[0][2] if columns else 0

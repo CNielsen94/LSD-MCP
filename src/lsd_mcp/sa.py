@@ -75,16 +75,27 @@ def sample_points(factors, count: int, method: str, rng) -> list:
     return points
 
 
-def _design_files(folder: Path, name: str) -> list:
-    """Files that belong to an existing design of this configuration."""
-    escaped = re.escape(name)
-    pattern = re.compile(
-        r"^(%s\.sa|%s_\d+\.lsd|%s_\d+_\d+\.csv|%s_\d+_\d+\.(res|tot)(\.gz)?)$"
-        % (escaped, escaped, escaped, escaped))
-    found = []
+def _design_files(folder: Path, name: str) -> dict:
+    """Files of an existing design of this configuration.
+
+    Returns {"definition": [...], "results": [...]}. Only definition files
+    decide whether a design exists. Design point results carry one number
+    more than the output of a plain run:
+      design: <name>_<k>_<seed>.res.gz   <name>_<k>_<seed>_<seed>.tot.gz
+      plain:  <name>_<seed>.res.gz       <name>_<first>_<last>.tot.gz
+    so plain-run files are never matched here.
+    """
+    n = re.escape(name)
+    definition = re.compile(r"^(%s\.sa|%s_\d+\.lsd|%s_\d+_\d+\.csv)$" % (n, n, n))
+    results = re.compile(r"^(%s_\d+_\d+\.res(\.gz)?|%s_\d+_\d+_\d+\.tot(\.gz)?)$" % (n, n))
+    found = {"definition": [], "results": []}
     for path in sorted(folder.iterdir()):
-        if pattern.match(path.name):
-            found.append(path)
+        if not path.is_file():
+            continue
+        if definition.match(path.name):
+            found["definition"].append(path)
+        elif results.match(path.name):
+            found["results"].append(path)
     return found
 
 
@@ -99,7 +110,7 @@ def create_design(model, config_file, factors, samples, method="lhs",
                   validation_samples=10, runs_per_point=2, seed=1,
                   overwrite=False) -> dict:
     folder = models.resolve_writable(model)
-    path = models.config_path(folder, config_file)
+    path = models.config_path(folder, config_file, model)
     name = models.config_name(config_file)
     if method not in ("lhs", "random"):
         raise models.ModelError("method must be 'lhs' or 'random'")
@@ -112,11 +123,12 @@ def create_design(model, config_file, factors, samples, method="lhs",
     parsed = lsdfile.parse(path)
     spec = _parse_factors(parsed, factors)
     existing = _design_files(folder, name)
-    if existing and not overwrite:
+    if existing["definition"] and not overwrite:
         raise models.ModelError("a design for %s already exists (%d files); pass overwrite=True to replace it"
-                                % (name, len(existing)))
-    for old in existing:
+                                % (name, len(existing["definition"])))
+    for old in existing["definition"] + existing["results"]:
         old.unlink()
+    shutil.rmtree(folder / (name + "_sa"), ignore_errors=True)
 
     rng = random.Random(seed)
     design = sample_points(spec, samples, method, rng)
@@ -253,7 +265,7 @@ def _read_csv(path: Path) -> list:
 
 def analyze(model, config_file, variable, metamodel="kriging", ini_drop=0, n_keep=-1) -> dict:
     folder = models.resolve_writable(model)
-    path = models.config_path(folder, config_file)
+    path = models.config_path(folder, config_file, model)
     name = models.config_name(config_file)
     if metamodel not in ("kriging", "polynomial"):
         raise models.ModelError("metamodel must be 'kriging' or 'polynomial'")
@@ -281,7 +293,15 @@ def analyze(model, config_file, variable, metamodel="kriging", ini_drop=0, n_kee
     result = run(command, cwd=folder, timeout=3600)
     error_file = out / "error.txt"
     if error_file.is_file():
-        return {"ok": False, "message": error_file.read_text().strip()[:1500]}
+        r_message = error_file.read_text().strip()[:1500]
+        if "negative weights" in r_message:
+            return {"ok": False,
+                    "message": ("LSD's polynomial meta-model weights each design point by "
+                                "mean/SD of the response and stops when a point has a negative "
+                                "mean. Use metamodel='kriging', or a response whose mean is "
+                                "positive at every design point."),
+                    "r_message": r_message}
+        return {"ok": False, "message": r_message}
     if not result.ok or not (out / "sobol.csv").is_file():
         return {"ok": False, "message": "R failed", "output_tail": result.output[-1500:]}
     fit = _read_csv(out / "fit.csv")[0]

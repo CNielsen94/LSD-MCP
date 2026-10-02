@@ -59,3 +59,10 @@ def test_call_module_prints_one_json_document(linear, lsd_root, monkeypatch):
     bad = subprocess.run([sys.executable, "-m", "lsd_mcp.call", "set_saved"], input="{}",
                          capture_output=True, text=True, env=env)
     assert json.loads(bad.stdout)["error"].startswith("TypeError")
+
+
+def test_status_utilities_is_a_string(models_dir, lsd_root):
+    from lsd_mcp import server
+    info = server.lsd_status()
+    assert info["utilities"] == "built" or info["utilities"].startswith("not built yet")
+    assert "utilities_built" not in info

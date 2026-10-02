@@ -51,3 +51,25 @@ def test_run_reports_compile_error(linear, lsd_root):
 def test_read_results_rejects_paths(linear):
     with pytest.raises(models.ModelError):
         run.read_results("linear", "../x.res.gz")
+
+
+def test_multi_run_totals_file_is_listed(models_dir, lsd_root):
+    models.copy_model("Literature/Coordination", "coor")
+    models.set_run_settings("coor", "Single", steps=10)
+    result = run.run_configuration("coor", "Single", seed=1, runs=3)
+    assert result["result_files"] == ["Single_1.res.gz", "Single_1_3.tot.gz",
+                                      "Single_2.res.gz", "Single_3.res.gz"]
+
+
+def test_read_results_with_no_matching_series_lists_names(linear, lsd_root):
+    assert run.run_configuration("linear", "Linear", seed=1)["ok"]
+    with pytest.raises(models.ModelError) as err:
+        run.read_results("linear", "Linear_1.res.gz", variables=["Nope"])
+    assert "Z 1" in str(err.value)
+
+
+def test_errors_name_the_model_path_as_given(models_dir, lsd_root):
+    (models_dir / "group" / "m").mkdir(parents=True)
+    with pytest.raises(models.ModelError) as err:
+        models.config_path(models_dir / "group" / "m", "X", "group/m")
+    assert "group/m" in str(err.value)

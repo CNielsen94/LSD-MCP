@@ -19,7 +19,8 @@ mcp = MCPServer(
 @mcp.tool()
 def lsd_status() -> dict:
     """Show the setup: LSD source root and tag, models folder, whether a C++
-    compiler was found, whether LSD's command-line utilities are built, and
+    compiler was found, whether LSD's command-line utilities are built yet
+    (they are built automatically on first use), and
     whether Rscript and the R package LSDsensitivity are available."""
     return backend.call("lsd_status", {})
 
@@ -114,7 +115,9 @@ def run_configuration(model: str, config: str, seed: int | None = None,
     models that use parallel objects. Results are written next to the
     configuration as <config>_<seed>.res.gz. Returns the files written and, for
     the first run, the last value and mean of each saved series (at most 50
-    series). Row 0 of a result file holds initial values. On failure returns
+    series). With runs > 1 (sequential) LSD also writes <config>_<first>_<last>.tot.gz;
+    with threads set the runs are parallel and no totals file is written.
+    Row 0 of a result file holds initial values. On failure returns
     the tail of LSD's output."""
     return backend.call("run_configuration", locals())
 
@@ -168,7 +171,9 @@ def sa_analyze(model: str, config: str, variable: str, metamodel: str = "kriging
     polynomial) and a table with direct effects and interactions per factor.
     ini_drop drops initial time steps, n_keep keeps that many (-1 = all). The
     response is the mean of the variable over the kept steps, averaged over
-    runs. Needs Rscript and LSDsensitivity; says so if they are missing."""
+    runs. The polynomial meta-model fails when a design point has a negative
+    mean response (LSD weights points by mean/SD); use kriging then. Needs
+    Rscript and LSDsensitivity; says so if they are missing."""
     return backend.call("sa_analyze", locals())
 
 

@@ -137,3 +137,20 @@ def test_missing_container_gives_clear_error(monkeypatch):
     monkeypatch.setenv("LSD_CONTAINER", "lsd-mcp-no-such-container")
     result = backend.call("lsd_status", {})
     assert "does not exist" in result["error"] and "run.sh" in result["error"]
+
+
+def test_polynomial_negative_means_message_and_kriging_still_works(container):
+    _, work = container
+    shutil.copytree(DATA / "noisy", work / "noisy")
+    call("set_saved", model="noisy", config="Noisy", names=["Y"])
+    call("sa_create_design", model="noisy", config="Noisy",
+         factors={"a": [0, 1], "b": [2, 3]}, samples=20, validation_samples=8, seed=1)
+    assert call("sa_run_design", model="noisy", config="Noisy")["ok"]
+    poly = call("sa_analyze", model="noisy", config="Noisy", variable="Y", metamodel="polynomial")
+    assert poly["ok"] is False
+    assert "negative mean" in poly["message"] and "negative weights" in poly["r_message"]
+    kriging = call("sa_analyze", model="noisy", config="Noisy", variable="Y", metamodel="kriging")
+    assert kriging["ok"], kriging
+    direct = {row["factor"]: row["direct"] for row in kriging["sobol"]}
+    assert direct["a"] == pytest.approx(0.5, abs=0.1)
+    assert direct["b"] == pytest.approx(0.5, abs=0.1)

@@ -119,3 +119,24 @@ def test_analyze_sobol_effects(linear, lsd_root, metamodel):
     assert direct["a"] == pytest.approx(4 / 13, abs=0.03)
     assert direct["b"] == pytest.approx(9 / 13, abs=0.03)
     assert abs(direct["c"]) < 0.03
+
+
+def test_plain_run_does_not_block_a_design_and_survives_overwrite(linear, lsd_root):
+    from lsd_mcp import run
+    models.set_saved("linear", "Linear", ["Z"])
+    assert run.run_configuration("linear", "Linear", seed=1)["ok"]
+    assert run.run_configuration("linear", "Linear", seed=5, runs=2)["ok"]
+    plain = sorted(path.name for path in linear.glob("Linear_*.*gz"))
+    assert plain == ["Linear_1.res.gz", "Linear_1_1.tot.gz", "Linear_5.res.gz",
+                     "Linear_5_6.tot.gz", "Linear_6.res.gz"]
+    make_design(linear, samples=4, validation_samples=2)
+    assert sa.run_design("linear", "Linear")["ok"]
+    (linear / "Linear_sa").mkdir()
+    assert list(linear.glob("Linear_1_*_*.tot.gz"))
+    make_design(linear, samples=4, validation_samples=2, overwrite=True, seed=3)
+    assert not (linear / "Linear_sa").exists()
+    assert not list(linear.glob("Linear_1_*_*.tot.gz"))
+    assert not (linear / "Linear_1_3.res.gz").exists()
+    for name in plain + ["Linear.lsd"]:
+        assert (linear / name).is_file(), name
+    assert (linear / "Linear_1_4.csv").is_file()
