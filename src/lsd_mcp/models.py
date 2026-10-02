@@ -234,6 +234,26 @@ def is_design_output(path: Path, root: Path) -> bool:
     return False
 
 
+def new_model_destination(name: str, source: Path = None) -> Path:
+    """Folder for a new model in the models folder. It must not exist, lie inside
+    another model, or (for a copy) inside the source folder."""
+    target_root = config.models_dir()
+    target = target_root.joinpath(*_relative_parts(name, "name"))
+    if not _inside(target, target_root):
+        raise ModelError("target escapes the models folder")
+    if source is not None and _inside(target, source):
+        raise ModelError("the destination %s lies inside the source folder %s" % (name, source.name))
+    for ancestor in target.parents:
+        if ancestor == target_root.resolve() or not _inside(ancestor, target_root):
+            break
+        if ancestor.is_dir() and is_model(ancestor):
+            raise ModelError("the destination %s lies inside the model folder %s"
+                             % (name, ancestor.relative_to(target_root).as_posix()))
+    if target.exists():
+        raise ModelError("%s already exists in the models folder" % name)
+    return target
+
+
 def copy_model(source: str, name: str, source_group: str = "examples") -> dict:
     src = resolve_model(source, source_group)
     if not is_model(src):
@@ -243,20 +263,7 @@ def copy_model(source: str, name: str, source_group: str = "examples") -> dict:
             names = [folder.relative_to(group_root(source_group)).as_posix() for folder in inner[:5]]
             message += "; it contains models, for example: " + ", ".join(names)
         raise ModelError(message)
-    target_root = config.models_dir()
-    target = target_root.joinpath(*_relative_parts(name, "name"))
-    if not _inside(target, target_root):
-        raise ModelError("target escapes the models folder")
-    if _inside(target, src):
-        raise ModelError("the destination %s lies inside the source folder %s" % (name, source))
-    for ancestor in target.parents:
-        if ancestor == target_root.resolve() or not _inside(ancestor, target_root):
-            break
-        if ancestor.is_dir() and is_model(ancestor):
-            raise ModelError("the destination %s lies inside the model folder %s"
-                             % (name, ancestor.relative_to(target_root).as_posix()))
-    if target.exists():
-        raise ModelError("%s already exists in the models folder" % name)
+    target = new_model_destination(name, src)
     copied = []
     for path in sorted(src.rglob("*")):
         if not path.is_file() or path.name.startswith("."):

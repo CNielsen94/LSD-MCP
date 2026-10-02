@@ -8,14 +8,14 @@ EXPECTED = {
     "lsd_status", "list_models", "read_equations", "describe_configuration",
     "copy_model", "write_equations", "set_values", "set_run_settings",
     "set_saved", "compile_model", "run_configuration", "read_results",
-    "sa_create_design", "sa_run_design", "sa_analyze",
+    "sa_create_design", "sa_run_design", "sa_analyze", "edit_structure", "create_model",
 }
 
 
 def test_server_lists_all_tools():
     from lsd_mcp import server
     tools = asyncio.run(server.mcp.list_tools())
-    assert len(tools) == 15
+    assert len(tools) == 17
     assert {tool.name for tool in tools} == EXPECTED
     for tool in tools:
         assert tool.description

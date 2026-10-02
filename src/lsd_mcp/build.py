@@ -14,6 +14,8 @@ from .runner import run
 
 SHIM = Path(__file__).with_name("shim.cpp")
 DOE = Path(__file__).with_name("doe.cpp")  # our own program, includes LSD's set_all.cpp
+STRUCTURE = Path(__file__).with_name("structure.cpp")  # our own program, edits a model's structure
+GLOBALS = Path(__file__).with_name("lsd_globals.h")  # globals both programs define for the engine
 ENGINE = ["common", "lsdmain", "file", "nets", "object", "util", "variab"]
 UTIL_ENGINE = ["common", "file", "nets", "object", "util", "variab"]
 # utility -> (source file, engine objects to link, needs the shim)
@@ -23,8 +25,9 @@ UTILITIES = {
     "lsd_getlimits": ("getlimits", UTIL_ENGINE, True),
     "lsd_mcstats": ("mcstats", ["common"], False),
     "lsd_doe": ("doe", UTIL_ENGINE, True),
+    "lsd_edit": ("structure", UTIL_ENGINE, True),
 }
-OWN_SOURCES = {"shim.cpp": SHIM, "doe.cpp": DOE}
+OWN_SOURCES = {"shim.cpp": SHIM, "doe.cpp": DOE, "structure.cpp": STRUCTURE}
 
 _lock = threading.Lock()
 
@@ -105,7 +108,9 @@ def _utility_current(exe: Path, name: str) -> bool:
     if not exe.is_file():
         return False
     own = OWN_SOURCES.get(UTILITIES[name][0] + ".cpp")
-    return own is None or exe.stat().st_mtime >= own.stat().st_mtime
+    if own is None:
+        return True
+    return exe.stat().st_mtime >= max(own.stat().st_mtime, GLOBALS.stat().st_mtime)
 
 
 def utilities(root: Path) -> dict:

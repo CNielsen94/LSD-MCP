@@ -8,7 +8,7 @@ from lsd_mcp.runner import run
 
 
 def test_utilities_build_and_work(utilities, linear):
-    assert sorted(utilities) == ["lsd_confgen", "lsd_doe", "lsd_getlimits", "lsd_getsaved", "lsd_mcstats"]
+    assert sorted(utilities) == ["lsd_confgen", "lsd_doe", "lsd_edit", "lsd_getlimits", "lsd_getsaved", "lsd_mcstats"]
     for exe in utilities.values():
         assert exe.is_file()
     out = linear / "saved.csv"

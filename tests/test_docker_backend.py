@@ -400,3 +400,39 @@ def test_public_tool_reproduces_nolh_mc_and_ee_on_linux(container):
                     assert without_run_settings(made) == without_run_settings(ref_file), ref_file.name
                 else:
                     assert made.read_bytes() == ref_file.read_bytes(), ref_file.name
+
+
+# --- creating and editing a model from nothing -----------------------------------
+
+def test_model_from_nothing_in_the_container(container):
+    _, work = container
+    made = call("create_model", name="born", title="Born here", description="From nothing.")
+    assert "modelinfo.txt" in made["files"] and (work / "born" / "modelinfo.txt").is_file()
+    assert [m["model"] for m in call("list_models")].count("born") == 1
+    call("edit_structure", model="born", config="Sim1", operations=[
+        {"op": "add_object", "parent": "Root", "name": "Pop"},
+        {"op": "add_parameter", "object": "Pop", "name": "r", "value": 0.5},
+        {"op": "add_variable", "object": "Pop", "name": "X", "lags": 1, "initial": 100, "saved": True}])
+    source = (work / "born" / "fun_born.cpp").read_text()
+    source = source.replace("MODELBEGIN\n", 'MODELBEGIN\n\nEQUATION( "X" )\nRESULT( V( "r" ) * VL( "X", 1 ) )\n', 1)
+    call("write_equations", model="born", content=source)
+    call("set_run_settings", model="born", config="Sim1", steps=5)
+    assert call("run_configuration", model="born", config="Sim1", seed=1)["ok"]
+    import gzip
+    lines = gzip.open(work / "born" / "Sim1_1.res.gz", "rt").read().splitlines()[1:]
+    assert [float(line.split("\t")[0]) for line in lines] == [100, 50, 25, 12.5, 6.25, 3.125]
+    call("edit_structure", model="born", config="Sim1", operations=[
+        {"op": "add_object", "parent": "Pop", "name": "Agent", "instances": 3},
+        {"op": "add_parameter", "object": "Agent", "name": "w"},
+        {"op": "set_instance_values", "name": "w", "values": [1, 2, 3]},
+        {"op": "add_variable", "object": "Pop", "name": "Total", "saved": True}])
+    source = source.replace("\nMODELEND\n", '\nEQUATION( "Total" )\nRESULT( SUM( "w" ) )\n\nMODELEND\n', 1)
+    call("write_equations", model="born", content=source)
+    assert call("run_configuration", model="born", config="Sim1", seed=1)["ok"]
+    lines = gzip.open(work / "born" / "Sim1_1.res.gz", "rt").read().splitlines()
+    names = [title.split()[0] for title in lines[0].split("\t") if title.strip()]
+    column = names.index("Total")
+    assert {line.split("\t")[column] for line in lines[2:]} == {"6"}
+    bad = backend.call("edit_structure", dict(model="born", config="Sim1",
+                                              operations=[{"op": "delete", "name": "Pop"}]))
+    assert "force" in bad["error"] and bad["error"].startswith("operation 1 (delete)")

@@ -34,10 +34,21 @@ uv run pytest -q
 ## Tools
 
 Inspect: `lsd_status`, `list_models`, `read_equations`, `describe_configuration`.
-Edit: `copy_model`, `write_equations`, `set_values`, `set_run_settings`, `set_saved`.
+Edit: `copy_model`, `create_model`, `write_equations`, `edit_structure`, `set_values`, `set_run_settings`, `set_saved`.
 Compile and run: `compile_model`, `run_configuration`, `read_results`.
 Sensitivity analysis: `sa_create_design`, `sa_run_design`, `sa_analyze`.
 `set_values` and the factors of `sa_create_design` take `"Name -k"` for the k-th lag of a variable.
+
+`create_model` makes a new model folder as LSD's model manager (LMM) does: the
+equation file `fun_<name>.cpp` from LSD's template, `model_options.txt`,
+`modelinfo.txt`, `description.txt` and a `Sim1.lsd` holding only Root.
+`edit_structure` applies a list of operations (add object, parameter, variable
+or function, rename, delete, set the number of instances, set the value of each
+instance, set a description) to a configuration with LSD's own functions,
+through `lsd_edit` (`src/lsd_mcp/structure.cpp`), and saves with LSD's
+`save_configuration`; if one operation fails nothing is written. With these, a
+model can be built from nothing: `create_model`, `edit_structure`,
+`write_equations`, `run_configuration`.
 
 `sa_create_design` makes one of four designs. `lhs` and `random` are sampled in
 Python and written through `lsd_confgen`. `nolh` (near-orthogonal Latin
@@ -122,6 +133,18 @@ it.
   what LSD's interface writes for the same settings and seed; NOLH and Monte Carlo
   range designs are identical on both platforms (`tests/data/doe_gui` holds the
   interface's files, `tests/test_doe.py` and the Docker tests compare them).
+- `edit_structure` saves with LSD's `save_configuration`, so the file takes LSD's
+  current layout. Of the 151 shipped example configurations LSD can load, 32 come
+  back byte-identical from an empty edit. The rest differ only in layout (no data):
+  descriptions without text were written as "(no description available)" in older
+  files and are now empty, `MODELREPORT` lost a leading space, an empty `EQ_FILE`
+  section is added, and the note LSD generates about the initial values of a
+  variable with no lags is dropped (LSD's `save_description`). If the equation
+  file is not in the model folder LSD would blank the `EQUATION` name; the tool
+  puts it back. New instances copy the object's first instance. Objects always
+  keep at least one instance.
+- Models made by `create_model` use LMM's compiler options (`SWITCH_CC=-O0 -ggdb3`),
+  so they compile without optimisation; edit `model_options.txt` for speed.
 - NOLH tables cover 1 to 100 factors (17 to 512 points); `samples` does not apply.
 - Without the Docker backend the compiler and utilities run on the host.
 - Models are compiled headless (`-D_NW_`). Eight of the 45 example models use

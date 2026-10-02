@@ -1,4 +1,4 @@
-"""The 15 tools as plain functions (standard library only).
+"""The 17 tools as plain functions (standard library only).
 
 server.py wraps each one for MCP; call.py runs one inside a Docker container.
 Expected failures become {"error": message} instead of an exception.
@@ -6,7 +6,7 @@ Expected failures become {"error": message} instead of an exception.
 
 import functools
 
-from . import build, lsdfile, lsdsource, models, run, sa, status
+from . import build, lsdfile, lsdsource, models, run, sa, status, structure
 
 EXPECTED_ERRORS = (models.ModelError, build.BuildError, lsdsource.LsdSourceError,
                    lsdfile.LsdFileError)
@@ -116,6 +116,16 @@ def sa_analyze(model: str, config: str, variable: str, metamodel: str = None,
                       levels, jump)
 
 
+@guarded
+def edit_structure(model: str, config: str, operations: list, new_config: str = None) -> dict:
+    return structure.edit_structure(model, config, operations, new_config)
+
+
+@guarded
+def create_model(name: str, title: str = "", description: str = "") -> dict:
+    return structure.create_model(name, title, description)
+
+
 TOOLS = {
     "lsd_status": lsd_status,
     "list_models": list_models,
@@ -126,6 +136,8 @@ TOOLS = {
     "set_values": set_values,
     "set_run_settings": set_run_settings,
     "set_saved": set_saved,
+    "edit_structure": edit_structure,
+    "create_model": create_model,
     "compile_model": compile_model,
     "run_configuration": run_configuration,
     "read_results": read_results,

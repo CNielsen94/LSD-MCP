@@ -9,7 +9,8 @@ mcp = MCPServer(
     instructions=(
         "Work with LSD (Laboratory for Simulation Development) models. "
         "Models you edit live in the LSD_MODELS folder; copy an example with "
-        "copy_model first. Typical flow: list_models, describe_configuration, "
+        "copy_model first (or create_model for an empty one, then "
+        "edit_structure and write_equations). Typical flow: list_models, describe_configuration, "
         "set_values / set_run_settings / set_saved, run_configuration, "
         "read_results. Sensitivity analysis: sa_create_design, sa_run_design, "
         "sa_analyze."))
@@ -108,6 +109,54 @@ def set_saved(model: str, config: str, names: list[str], saved: bool = True) -> 
     """Mark the named variables or parameters as saved (or not saved) to the
     result files. Only saved elements appear in results."""
     return backend.call("set_saved", locals())
+
+
+@mcp.tool()
+def edit_structure(model: str, config: str, operations: list[dict],
+                   new_config: str | None = None) -> dict:
+    """Change a configuration's structure (objects, parameters, variables,
+    functions, instance counts) with LSD's own code. `operations` is a list of
+    objects applied in order; if any fails (the message names it) nothing is
+    written. Writes new_config.lsd, or replaces config.lsd (old file kept as
+    .bak). Names must be valid LSD labels (letter or '_' first, then letters,
+    digits, '_') and unique across the whole model, objects and elements alike.
+    Operations, one example each:
+    {"op": "add_object", "parent": "Root", "name": "Firm", "instances": 10}
+    {"op": "add_parameter", "object": "Firm", "name": "alpha", "value": 0.5}
+    {"op": "add_variable", "object": "Firm", "name": "K", "lags": 1,
+     "initial": 1.0, "saved": true}  (initial: a number, or one per lag)
+    {"op": "add_function", "object": "Firm", "name": "f"}
+    {"op": "rename", "name": "old", "new_name": "new"}  (object or element)
+    {"op": "delete", "name": "K"}  (element; an object with elements or child
+     objects needs "force": true and goes with all of it)
+    {"op": "set_instances", "object": "Firm", "instances": 50}
+    {"op": "set_instance_values", "name": "alpha", "values": [0.1, 0.2],
+     "lag": 2}  (one value per instance in file order; lag only for variables)
+    {"op": "describe", "name": "alpha", "text": "adjustment speed"}
+    Parameters and variables are added to every instance of the object, with
+    the value (default 0) in each. set_instances gives the object that number
+    under every parent instance; new instances are copies of the object's
+    first instance (its values and its child objects), extra ones are removed
+    from the end; at least 1. Equations are not touched: add or change them
+    with write_equations. LSD's save rewrites the file in its own layout, so
+    old files may change in layout (empty descriptions, the notes LSD
+    generates for initial values of variables with no lags are dropped), never
+    in values."""
+    return backend.call("edit_structure", locals())
+
+
+@mcp.tool()
+def create_model(name: str, title: str = "", description: str = "") -> dict:
+    """Create a new, empty model folder in the models folder, as LSD's model
+    manager (LMM) does: equation file fun_<name>.cpp from LSD's template,
+    model_options.txt, modelinfo.txt (LMM lists a folder only with it),
+    description.txt, and a configuration Sim1.lsd holding only Root. `name` is
+    the folder (letters, digits, underscores; it must not exist or lie inside
+    another model). Then use edit_structure to add objects, parameters and
+    variables, write_equations for the equations, set_saved if needed, and
+    run_configuration. An empty model compiles and runs (it computes nothing
+    and saves nothing)."""
+    return backend.call("create_model", locals())
 
 
 # --- compile and run ------------------------------------------------------------
