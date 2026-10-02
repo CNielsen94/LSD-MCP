@@ -7,6 +7,9 @@ analysis. It uses LSD's own engine and command-line utilities (`lsd_confgen`,
 `lsd_getsaved`, ...) and LSD's R package `LSDsensitivity`; it does not
 re-implement them. Built against release tag `8.1-stable-5`.
 
+It runs LSD either on the host or, with the Docker backend below, inside the
+container of [Docker_LSD_setup](https://github.com/CNielsen94/Docker_LSD_setup).
+
 ## Install
 
 Needs Python 3.10+, `uv`, a C++ compiler (`c++`, `g++` or `clang++`), `zlib`,
@@ -50,6 +53,11 @@ call is executed inside a running LSD container by the same standard-library
 code, which `lsd-mcp` copies into the container (`docker cp`, re-copied when the
 source changes). It never starts, stops or removes a container.
 
+The container comes from [Docker_LSD_setup](https://github.com/CNielsen94/Docker_LSD_setup),
+a separate repository that runs LSD in Docker with a browser desktop, R and
+LSD's R packages. This backend needs nothing installed on the host besides
+Docker and `uv`: the compiler, LSD and R are the container's.
+
 | Variable | Default | Meaning |
 |---|---|---|
 | `LSD_MCP_BACKEND` | `local` | `docker` forwards tool calls into the container. |
@@ -61,7 +69,7 @@ source changes). It never starts, stops or removes a container.
 claude mcp add lsd-docker -e LSD_MCP_BACKEND=docker -- uv run --project /path/to/lsd-mcp lsd-mcp
 ```
 
-Start the container with `./run.sh` in the Docker_LSD_setup folder first. Two
+Start the container with `./run.sh` in your Docker_LSD_setup folder first. Two
 things to know: models live in the container's Work folder, which is shared
 with the host and shown in LMM as "Work in Progress" (`copy_model` adds a
 `modelinfo.txt` so LMM lists the copy); and the build cache inside the
