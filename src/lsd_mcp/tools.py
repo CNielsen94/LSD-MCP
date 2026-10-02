@@ -91,12 +91,15 @@ def read_results(model: str, results_file: str, variables: list = None,
 
 
 @guarded
-def sa_create_design(model: str, config: str, factors: dict, samples: int,
+def sa_create_design(model: str, config: str, factors: dict, samples: int = None,
                      method: str = "lhs", validation_samples: int = 10,
                      runs_per_point: int = 2, seed: int = 1,
-                     overwrite: bool = False) -> dict:
+                     overwrite: bool = False, extended: bool = False,
+                     trajectories: int = 10, levels: int = 4, jump: int = 2,
+                     pool: int = 100) -> dict:
     return sa.create_design(model, config, factors, samples, method,
-                            validation_samples, runs_per_point, seed, overwrite)
+                            validation_samples, runs_per_point, seed, overwrite,
+                            extended, trajectories, levels, jump, pool)
 
 
 @guarded
@@ -106,9 +109,11 @@ def sa_run_design(model: str, config: str, threads: int = None,
 
 
 @guarded
-def sa_analyze(model: str, config: str, variable: str, metamodel: str = "kriging",
-               ini_drop: int = 0, n_keep: int = -1, r_seed: int = 1) -> dict:
-    return sa.analyze(model, config, variable, metamodel, ini_drop, n_keep, r_seed)
+def sa_analyze(model: str, config: str, variable: str, metamodel: str = None,
+               ini_drop: int = 0, n_keep: int = -1, r_seed: int = 1,
+               levels: int = None, jump: int = None) -> dict:
+    return sa.analyze(model, config, variable, metamodel, ini_drop, n_keep, r_seed,
+                      levels, jump)
 
 
 TOOLS = {

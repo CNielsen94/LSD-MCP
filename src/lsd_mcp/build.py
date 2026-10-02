@@ -13,6 +13,7 @@ from . import config
 from .runner import run
 
 SHIM = Path(__file__).with_name("shim.cpp")
+DOE = Path(__file__).with_name("doe.cpp")  # our own program, includes LSD's set_all.cpp
 ENGINE = ["common", "lsdmain", "file", "nets", "object", "util", "variab"]
 UTIL_ENGINE = ["common", "file", "nets", "object", "util", "variab"]
 # utility -> (source file, engine objects to link, needs the shim)
@@ -21,7 +22,9 @@ UTILITIES = {
     "lsd_getsaved": ("getsaved", UTIL_ENGINE, True),
     "lsd_getlimits": ("getlimits", UTIL_ENGINE, True),
     "lsd_mcstats": ("mcstats", ["common"], False),
+    "lsd_doe": ("doe", UTIL_ENGINE, True),
 }
+OWN_SOURCES = {"shim.cpp": SHIM, "doe.cpp": DOE}
 
 _lock = threading.Lock()
 
@@ -97,6 +100,14 @@ def engine_objects(root: Path) -> Path:
     return out
 
 
+def _utility_current(exe: Path, name: str) -> bool:
+    """Built, and newer than our own source file if it has one (doe.cpp)."""
+    if not exe.is_file():
+        return False
+    own = OWN_SOURCES.get(UTILITIES[name][0] + ".cpp")
+    return own is None or exe.stat().st_mtime >= own.stat().st_mtime
+
+
 def utilities(root: Path) -> dict:
     """Build the command-line utilities; return name -> executable path."""
     out = build_dir(root) / "util"
@@ -104,7 +115,7 @@ def utilities(root: Path) -> dict:
     for name in UTILITIES:
         exes[name] = out / name
     with _lock:
-        missing = [n for n in UTILITIES if not exes[n].is_file()]
+        missing = [n for n in UTILITIES if not _utility_current(exes[n], n)]
         if not missing:
             return exes
         cc = _need_compiler()
@@ -120,7 +131,7 @@ def utilities(root: Path) -> dict:
             if not target.is_file():
                 jobs.append(([cc] + flags + ["-c", root / "src" / (obj + ".cpp"), "-o", target], target))
         for source in ["shim.cpp"] + [UTILITIES[n][0] + ".cpp" for n in missing]:
-            base = SHIM if source == "shim.cpp" else root / "src" / source
+            base = OWN_SOURCES.get(source, root / "src" / source)
             target = out / (Path(source).stem + ".o")
             jobs.append(([cc] + flags + ["-c", base, "-o", target], target))
         _compile_many(jobs, out)

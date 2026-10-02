@@ -2,10 +2,10 @@
 
 An MCP server that lets an agent work with [LSD](https://github.com/marcov64/Lsd)
 (Laboratory for Simulation Development, Valente and Pereira): inspect and edit
-models, compile and run them headless, and run a meta-model sensitivity
-analysis. It uses LSD's own engine and command-line utilities (`lsd_confgen`,
-`lsd_getsaved`, ...) and LSD's R package `LSDsensitivity`; it does not
-re-implement them. Built against release tag `8.1-stable-5`.
+models, compile and run them headless, and run sensitivity analyses
+(meta-models with Sobol indices, elementary effects). It uses LSD's own engine,
+command-line utilities (`lsd_confgen`, `lsd_getsaved`, ...), design code
+and R package `LSDsensitivity`; it does not re-implement them. Built against release tag `8.1-stable-5`.
 
 It runs LSD either on the host or, with the Docker backend below, inside the
 container of [Docker_LSD_setup](https://github.com/CNielsen94/Docker_LSD_setup).
@@ -37,6 +37,21 @@ Inspect: `lsd_status`, `list_models`, `read_equations`, `describe_configuration`
 Edit: `copy_model`, `write_equations`, `set_values`, `set_run_settings`, `set_saved`.
 Compile and run: `compile_model`, `run_configuration`, `read_results`.
 Sensitivity analysis: `sa_create_design`, `sa_run_design`, `sa_analyze`.
+
+`sa_create_design` makes one of four designs. `lhs` and `random` are sampled in
+Python and written through `lsd_confgen`. `nolh` (near-orthogonal Latin
+hypercube, LSD's own tables, optionally extended) and `ee` (elementary effects,
+Morris; trajectories, levels, jump, pool) are made by LSD's own design code
+(`design` and `sensitivity_doe` in `set_all.cpp`) through `lsd_doe`, a small
+program of ours (`src/lsd_mcp/doe.cpp`) that includes LSD's file unmodified and
+makes the calls the interface makes. A `nolh` design gets an out-of-sample set
+from LSD's Monte Carlo range sampling, as the interface offers after NOLH; an
+`ee` design has none. Every design also gets `<config>_design.json` (method and
+parameters). `sa_analyze` fits a Kriging or polynomial meta-model with Sobol
+indices, or, for an `ee` design, runs LSD's elementary effects analysis and
+returns mu, mu_star, sigma, se and p_value per factor. For an `ee` design made in
+LSD's interface (no design file) pass `metamodel="ee"` with its `levels` and
+`jump`.
 
 ## Register with Claude Code
 
@@ -92,9 +107,18 @@ it.
   `SEED 0`); the tools say so and `set_run_settings(seed=1)` fixes it.
 - Totals files (`.tot.gz`) have no header and one row per run; `read_results`
   does not read them and names the `.res.gz` files instead.
-- Version 1. Sensitivity analysis covers Latin hypercube and uniform random
-  designs with a Kriging or polynomial meta-model. Elementary effects and LSD's
-  NOLH tables come in a later version.
+- Sensitivity analysis covers Latin hypercube, uniform random and NOLH designs
+  with a Kriging or polynomial meta-model, and elementary effects designs.
+  `factors` takes parameters only; LSD's interface also accepts the initial value
+  of a variable as a factor (reachable only through a `.sa` file made there).
+- An elementary effects design made on macOS differs from one made on Linux
+  (including in Docker) for the same seed, because LSD shuffles trajectories with
+  the C++ standard library's `shuffle`, which differs between libc++ and
+  libstdc++. Both are valid designs. On Linux the design is byte-identical to
+  what LSD's interface writes for the same settings and seed; NOLH and Monte Carlo
+  range designs are identical on both platforms (`tests/data/doe_gui` holds the
+  interface's files, `tests/test_doe.py` and the Docker tests compare them).
+- NOLH tables cover 1 to 100 factors (17 to 512 points); `samples` does not apply.
 - Without the Docker backend the compiler and utilities run on the host.
 - Models are compiled headless (`-D_NW_`). Eight of the 45 example models use
   GUI-only features (Tcl calls, the debugger variables) and do not compile this way.
@@ -103,4 +127,4 @@ it.
 - `lsd_confgen` drops everything after `MODELREPORT` (descriptions, embedded
   equations). `set_values` appends it again from the original file; the numbered
   design configurations are left as LSD writes them.
-- `sa_analyze` is tested on Linux with R 4.3.3 and LSDsensitivity 1.2.3 (the test is skipped where R is missing).
+- `sa_analyze` is tested on Linux with R 4.3.3 and LSDsensitivity 1.2.3 (the tests are skipped where R is missing).

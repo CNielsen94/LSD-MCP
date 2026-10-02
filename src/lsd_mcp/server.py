@@ -150,20 +150,40 @@ def read_results(model: str, results_file: str, variables: list[str] | None = No
 
 @mcp.tool()
 def sa_create_design(model: str, config: str, factors: dict[str, list[float | str]],
-                     samples: int, method: str = "lhs", validation_samples: int = 10,
-                     runs_per_point: int = 2, seed: int = 1,
-                     overwrite: bool = False) -> dict:
-    """Create a design of experiments for a meta-model sensitivity analysis.
+                     samples: int | None = None, method: str = "lhs",
+                     validation_samples: int = 10, runs_per_point: int = 2,
+                     seed: int = 1, overwrite: bool = False, extended: bool = False,
+                     trajectories: int = 10, levels: int = 4, jump: int = 2,
+                     pool: int = 100) -> dict:
+    """Create a design of experiments for a sensitivity analysis and write it in
+    LSD's own file layout in the model folder: <config>.sa, the design table
+    <config>_1_N.csv (and for meta-model designs the out-of-sample table
+    <config>_N+1_N+V.csv), numbered configurations <config>_1.lsd ..., and
+    <config>_design.json (our file: method and parameters).
     factors maps a parameter name to [min, max], or [min, max, "int"] for
-    integers. Samples `samples` points (method 'lhs' Latin hypercube or
-    'random') plus `validation_samples` uniform out-of-sample points, and
-    writes LSD's own file layout in the model folder: <config>.sa, the two
-    design tables <config>_1_S.csv and <config>_S+1_S+V.csv, and numbered
-    configurations <config>_1.lsd ... Each point runs runs_per_point times
-    (at least 2) with its own seeds. Refuses to replace an existing design
-    unless overwrite=True. A warning is returned for integer factors with
-    few levels (the hypercube collapses onto them). Variables whose results will be analysed must be
-    saved (set_saved)."""
+    integers. method:
+    'lhs' (Latin hypercube) or 'random': `samples` points (required, at least 2)
+    plus validation_samples uniform out-of-sample points, for a Kriging or
+    polynomial meta-model.
+    'nolh': near-orthogonal Latin hypercube made by LSD's own NOLH tables. LSD
+    chooses the table from the number of factors (17 points for 1-7 factors,
+    33 for 8-11, 65 for 12-16, 129 for 17-22, 257 for 23-29, 512 for 30-100;
+    extended=True uses LSD's extended size for the table: 33, 65, 129, 257,
+    257, 512), so `samples` is not used; the result says how
+    many points LSD produced. Plus validation_samples out-of-sample points by
+    LSD's Monte Carlo range sampling. For meta-model analysis.
+    'ee': elementary effects (Morris) design made by LSD's own code:
+    trajectories (default 10) each of factors + 1 points, chosen from a pool of
+    `pool` random trajectories (default 100) on `levels` levels (even, default
+    4) with `jump` (default 2). No out-of-sample set; validation_samples and
+    samples are ignored. An ee design made on macOS differs from one made on
+    Linux for the same seed (the C++ library's shuffle differs); both are valid
+    designs. Analyse it with sa_analyze (metamodel 'ee').
+    Each point runs runs_per_point times (at least 2) with its own seeds.
+    seed seeds the sampling. Refuses to replace an existing design unless
+    overwrite=True. A warning is returned for integer factors with few levels
+    (a hypercube collapses onto them). Variables whose results will be analysed
+    must be saved (set_saved)."""
     return backend.call("sa_create_design", locals())
 
 
@@ -177,21 +197,30 @@ def sa_run_design(model: str, config: str, threads: int | None = None,
 
 
 @mcp.tool()
-def sa_analyze(model: str, config: str, variable: str, metamodel: str = "kriging",
-               ini_drop: int = 0, n_keep: int = -1, r_seed: int = 1) -> dict:
-    """Fit a meta-model ('kriging' or 'polynomial') to the design results for
-    one saved variable and compute its Sobol decomposition, using LSD's R
-    package LSDsensitivity. Returns the fit quality (Q2 for kriging, R2 for
-    polynomial) and a table with direct effects and interactions per factor.
+def sa_analyze(model: str, config: str, variable: str, metamodel: str | None = None,
+               ini_drop: int = 0, n_keep: int = -1, r_seed: int = 1,
+               levels: int | None = None, jump: int | None = None) -> dict:
+    """Analyse the design results for one saved variable with LSD's R package
+    LSDsensitivity. metamodel 'kriging' (default for lhs, random and nolh
+    designs) or 'polynomial' fits a meta-model and computes its Sobol
+    decomposition: returns the fit quality (Q2 for kriging, R2 for polynomial)
+    and a table with direct effects and interactions per factor. For a design
+    made with method 'ee' the analysis is elementary effects (metamodel 'ee',
+    chosen automatically): returns per factor mu, mu_star, sigma, se and
+    p_value (parameters scaled to [0, 1]; mu_star is the overall effect, sigma
+    non-linear or interaction effects, p_value tests mu_star = 0), sorted by
+    mu_star. Kriging or polynomial on an ee design, or ee on another design,
+    is an error. For an ee design made in LSD's own interface (no design file)
+    pass metamodel='ee' with its levels and jump.
     ini_drop drops initial time steps, n_keep keeps that many (-1 = all). The
     response is the mean of the variable over the kept steps, averaged over
     runs. Variables whose name starts with '_' work; with several instances
     only the first instance is analysed. ini_drop must be below MAX_STEP and
     ini_drop + n_keep at most MAX_STEP. r_seed seeds R's random
     numbers, so identical calls give identical results. A warning is added when
-    the fit is below 0.5. The polynomial meta-model fails when a design point
-    has a negative mean response (LSD weights points by mean/SD) and needs at
-    least two factors; use kriging then. Kriging can fail numerically when
+    a meta-model fit is below 0.5. The polynomial meta-model fails when a design
+    point has a negative mean response (LSD weights points by mean/SD) and needs
+    at least two factors; use kriging then. Kriging can fail numerically when
     design points nearly coincide (the message says so; try polynomial). Needs
     Rscript and LSDsensitivity; says so if they are missing."""
     return backend.call("sa_analyze", locals())

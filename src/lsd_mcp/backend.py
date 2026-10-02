@@ -15,7 +15,7 @@ from pathlib import Path
 from .runner import run
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-PACKAGE_FILES = ("*.py", "shim.cpp", "sa_analysis.R")
+PACKAGE_FILES = ("*.py", "shim.cpp", "doe.cpp", "sa_analysis.R")
 CONTAINER_PKG = "/home/lsd/.lsd-mcp/pkg"
 CONTAINER_STAMP = CONTAINER_PKG + "/lsd_mcp.stamp"
 START_HINT = "start it with ./run.sh in the Docker_LSD_setup folder"

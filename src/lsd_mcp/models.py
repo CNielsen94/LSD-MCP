@@ -214,7 +214,8 @@ def read_equations(model: str, group: str = "models", file: str = None) -> str:
 
 def is_design_output(path: Path, root: Path) -> bool:
     """Files that sa_create_design / sa_analyze generate next to a configuration:
-    numbered configurations, design tables and the <config>_sa/ results.
+    numbered configurations, design tables, the <config>_design.json file and
+    the <config>_sa/ results.
     The .sa file is kept. Only names built on an existing configuration count."""
     configs = set(p.stem for p in path.parent.glob("*.lsd"))
     for folder in path.parents:
@@ -225,6 +226,8 @@ def is_design_output(path: Path, root: Path) -> bool:
     for config in configs:
         escaped = re.escape(config)
         if re.match(r"^%s_\d+_\d+\.csv$" % escaped, path.name):
+            return True
+        if path.name == config + "_design.json" and (path.parent / (config + ".sa")).is_file():
             return True
         if re.match(r"^%s_\d+\.lsd$" % escaped, path.name) and (path.parent / (config + ".sa")).is_file():
             return True

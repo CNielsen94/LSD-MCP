@@ -228,3 +228,96 @@ def test_kriging_numerical_failure_is_explained(container):
     result = call("sa_analyze", model="bin", config="MarkI-Beta", variable="HHI")
     assert result["ok"] is False, result
     assert "not positive definite" in result["message"] and "leading minor" in result["r_message"]
+
+
+# --- NOLH and elementary effects (LSD's design code, on Linux) ------------------
+
+GUI = DATA / "doe_gui"
+CONTAINER_WORK = "/home/lsd/LSD/Work"
+
+
+def python_in_container(name, code):
+    """Run Python with the copied lsd_mcp package inside the container."""
+    done = subprocess.run(
+        ["docker", "exec", "-e", "PYTHONPATH=" + backend.CONTAINER_PKG, "-e", "PYTHONDONTWRITEBYTECODE=1",
+         "-e", "LSDROOT=/home/lsd/LSD", "-e", "LSD_MCP_HOME=/home/lsd/.cache/lsd-mcp",
+         name, "python3", "-c", code],
+        capture_output=True, text=True)
+    assert done.returncode == 0, done.stdout + done.stderr
+    return done.stdout
+
+
+def make_in_container(name, folder, *modes):
+    """Run lsd_doe once per mode (a list of its options) in a model folder."""
+    code = ("from pathlib import Path\nfrom lsd_mcp import sa\n"
+            "for options in %r:\n    sa.run_doe(Path(%r), 'Linear', *options)\n"
+            % (list(modes), CONTAINER_WORK + "/" + folder))
+    python_in_container(name, code)
+
+
+def same_as_reference(made, reference):
+    files = sorted(path.name for path in reference.iterdir())
+    assert files
+    for filename in files:
+        assert (made / filename).read_bytes() == (reference / filename).read_bytes(), filename
+
+
+def test_designs_are_byte_identical_to_the_interface_on_linux(container):
+    name, work = container
+    call("lsd_status")  # copies the package into the container
+    for folder, modes, reference in (
+            ("ref_nolh", [["-m", "nolh"], ["-m", "mc", "-n", "10", "-i", "18"]], "nolh_append"),
+            ("ref_mc", [["-m", "mc", "-n", "10"]], "mc"),
+            ("ref_ee", [["-m", "ee"]], "ee")):
+        shutil.copytree(GUI / "baseline", work / folder)
+        make_in_container(name, folder, *modes)
+        same_as_reference(work / folder, GUI / reference)
+    same_as_reference(work / "ref_nolh", GUI / "nolh")
+
+
+def test_ee_design_analysis_gives_the_model_coefficients(container):
+    _, work = container
+    shutil.copytree(DATA / "linear", work / "lin_ee")
+    call("set_saved", model="lin_ee", config="Linear", names=["Z"])
+    design = call("sa_create_design", model="lin_ee", config="Linear",
+                  factors={"a": [0, 1], "b": [2, 3], "c": [-1, 1]}, method="ee", seed=3)
+    assert (design["points"], design["validation_points"]) == (40, 0)
+    assert call("sa_run_design", model="lin_ee", config="Linear")["ok"]
+    result = call("sa_analyze", model="lin_ee", config="Linear", variable="Z")
+    assert result["ok"] and result["metamodel"] == "ee", result
+    assert (result["levels"], result["jump"]) == (4, 2)
+    mu = {row["factor"]: row["mu"] for row in result["effects"]}
+    assert mu["a"] == pytest.approx(2, abs=1e-3)
+    assert mu["b"] == pytest.approx(-3, abs=1e-3)
+    assert mu["c"] == pytest.approx(0, abs=1e-3)
+    star = {row["factor"]: row["mu_star"] for row in result["effects"]}
+    assert star["b"] == pytest.approx(3, abs=1e-3)
+    assert [row["factor"] for row in result["effects"]] == ["b", "a", "c"]
+    assert set(result["effects"][0]) == {"factor", "mu", "mu_star", "sigma", "se", "p_value"}
+    assert (work / "lin_ee" / "Linear_sa" / "Z-ee" / "ee.csv").is_file()
+    bad = backend.call("sa_analyze", dict(model="lin_ee", config="Linear", variable="Z", metamodel="kriging"))
+    assert "elementary effects design" in bad["error"]
+    # the same analysis for a design without our design file, as made in LSD's interface
+    (work / "lin_ee" / "Linear_design.json").unlink()
+    again = call("sa_analyze", model="lin_ee", config="Linear", variable="Z", metamodel="ee",
+                 levels=4, jump=2)
+    assert again["effects"] == result["effects"]
+
+
+def test_nolh_design_kriging_gives_the_direct_effects(container):
+    _, work = container
+    shutil.copytree(DATA / "linear", work / "lin_nolh")
+    call("set_saved", model="lin_nolh", config="Linear", names=["Z"])
+    design = call("sa_create_design", model="lin_nolh", config="Linear",
+                  factors={"a": [0, 1], "b": [2, 3], "c": [-1, 1]}, method="nolh",
+                  validation_samples=20, seed=1)
+    assert design["points"] == 17
+    assert (work / "lin_nolh" / "Linear_design.json").is_file()
+    assert call("sa_run_design", model="lin_nolh", config="Linear")["ok"]
+    result = call("sa_analyze", model="lin_nolh", config="Linear", variable="Z")
+    assert result["ok"] and result["metamodel"] == "kriging", result
+    direct = {row["factor"]: row["direct"] for row in result["sobol"]}
+    assert direct["a"] == pytest.approx(4 / 13, abs=0.03)
+    assert direct["b"] == pytest.approx(9 / 13, abs=0.03)
+    bad = backend.call("sa_analyze", dict(model="lin_nolh", config="Linear", variable="Z", metamodel="ee"))
+    assert "method 'nolh'" in bad["error"]

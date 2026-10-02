@@ -1,12 +1,20 @@
-"""Sensitivity analysis by the meta-model route: design, batch run, R analysis.
+"""Sensitivity analysis: design, batch run, R analysis.
 
-File layout follows what LSD's own interface writes (compare
-tests/data/doe_gui in the lsdsim project): <config>.sa, the design tables
-<config>_1_S.csv and <config>_S+1_S+V.csv, and numbered configurations
-<config>_k.lsd. Result files are <config>_k_<seed>.res.gz.
+Designs: Latin hypercube and uniform random points are sampled here and
+written through LSD's lsd_confgen; near-orthogonal Latin hypercube (NOLH) and
+elementary effects (EE) designs are made by LSD's own design code through
+lsd_doe (doe.cpp). Analysis: a meta-model with Sobol indices, or elementary
+effects, both by LSD's R package.
+
+File layout follows what LSD's own interface writes (tests/data/doe_gui):
+<config>.sa, the design tables <config>_1_S.csv and <config>_S+1_S+V.csv (EE
+has only the first), and numbered configurations <config>_k.lsd. Result files
+are <config>_k_<seed>.res.gz. <config>_design.json is ours: the method and its
+parameters.
 """
 
 import csv
+import json
 import os
 import random
 import re
@@ -88,7 +96,7 @@ def _design_files(folder: Path, name: str) -> dict:
     so plain-run files are never matched here.
     """
     n = re.escape(name)
-    definition = re.compile(r"^(%s\.sa|%s_\d+\.lsd|%s_\d+_\d+\.csv)$" % (n, n, n))
+    definition = re.compile(r"^(%s\.sa|%s_design\.json|%s_\d+\.lsd|%s_\d+_\d+\.csv)$" % (n, n, n, n))
     results = re.compile(r"^(%s_\d+_\d+\.res(\.gz)?|%s_\d+_\d+_\d+\.tot(\.gz)?)$" % (n, n))
     found = {"definition": [], "results": []}
     for path in sorted(folder.iterdir()):
@@ -108,36 +116,102 @@ def _format_csv(names, points) -> str:
     return "\n".join(lines) + "\n"
 
 
-def create_design(model, config_file, factors, samples, method="lhs",
+METHODS = ("lhs", "random", "nolh", "ee")
+
+
+def design_info_path(folder: Path, name: str) -> Path:
+    return folder / (name + "_design.json")
+
+
+def read_design_info(folder: Path, name: str):
+    """The sidecar written by create_design, or None for a design made elsewhere."""
+    path = design_info_path(folder, name)
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except ValueError:
+        raise models.ModelError("%s is not valid JSON; delete it or recreate the design" % path.name)
+
+
+def _check_ee_settings(trajectories, levels, jump, pool):
+    """The checks LSD's interface makes before an elementary effects design."""
+    if levels < 2 or levels % 2 != 0:
+        raise models.ModelError("levels must be even and at least 2, got %s" % levels)
+    if trajectories < 2:
+        raise models.ModelError("trajectories must be at least 2, got %s" % trajectories)
+    if pool < trajectories:
+        raise models.ModelError("pool (%s) must be at least trajectories (%s)" % (pool, trajectories))
+    if jump < 1:
+        raise models.ModelError("jump must be at least 1, got %s" % jump)
+
+
+def run_doe(folder: Path, name: str, *options) -> dict:
+    """Run lsd_doe in the model folder on <name>.lsd and <name>.sa.
+
+    Returns {"points": N, "first": F, "last": L}: LSD wrote N configurations
+    numbered F to L and the design table <name>_F_L.csv.
+    """
+    exe = build.utilities(lsdsource.lsd_root())["lsd_doe"]
+    result = run([exe, "-f", name + ".lsd", "-s", name + ".sa"] + list(options),
+                 cwd=folder, timeout=600, separate_stderr=True)
+    if not result.ok:
+        raise models.ModelError("lsd_doe failed: " + (result.stderr or result.output).strip()[-600:])
+    match = re.search(r"^points (\d+) first (\d+) last (\d+)$", result.output, re.M)
+    if not match:
+        raise models.ModelError("lsd_doe gave no summary line: " + result.output[-300:])
+    return {"points": int(match.group(1)), "first": int(match.group(2)), "last": int(match.group(3))}
+
+
+def _clear_design(folder: Path, name: str, overwrite: bool, keep_sa: bool):
+    existing = _design_files(folder, name)
+    old_files = existing["definition"]
+    if keep_sa:
+        old_files = [path for path in old_files if path.name != name + ".sa"]
+    if old_files and not overwrite:
+        raise models.ModelError("a design for %s already exists (%d files); pass overwrite=True to replace it"
+                                % (name, len(old_files)))
+    for old in old_files + existing["results"]:
+        old.unlink()
+    shutil.rmtree(folder / (name + "_sa"), ignore_errors=True)
+
+
+def _write_runs_and_seeds(folder: Path, name: str, original: str, total: int,
+                          runs_per_point: int, seed: int):
+    """Every numbered configuration gets runs_per_point runs and its own seeds."""
+    for k in range(1, total + 1):
+        path = folder / ("%s_%d.lsd" % (name, k))
+        text = lsdfile.read_text(path)
+        text = lsdfile.restore_equation_line(text, original)
+        text = lsdfile.set_settings(text, SIM_NUM=runs_per_point,
+                                    SEED=seed + (k - 1) * runs_per_point)
+        lsdfile.write_text(path, text)
+
+
+def create_design(model, config_file, factors, samples=None, method="lhs",
                   validation_samples=10, runs_per_point=2, seed=1,
-                  overwrite=False) -> dict:
+                  overwrite=False, extended=False, trajectories=10, levels=4,
+                  jump=2, pool=100) -> dict:
     folder = models.resolve_writable(model)
     path = models.config_path(folder, config_file, model)
     name = models.config_name(config_file)
-    if method not in ("lhs", "random"):
-        raise models.ModelError("method must be 'lhs' or 'random'")
-    if samples < 2:
-        raise models.ModelError("samples must be at least 2")
-    if validation_samples < 1:
+    if method not in METHODS:
+        raise models.ModelError("method must be 'lhs', 'random', 'nolh' or 'ee'")
+    if method in ("lhs", "random"):
+        if samples is None:
+            raise models.ModelError("samples is required for method %r" % method)
+        if samples < 2:
+            raise models.ModelError("samples must be at least 2")
+    if method == "ee":
+        _check_ee_settings(trajectories, levels, jump, pool)
+    elif validation_samples < 1:
         raise models.ModelError("validation_samples must be at least 1 (the analysis needs them)")
     if runs_per_point < 2:
         raise models.ModelError("runs_per_point must be at least 2 (LSD's R package refuses fewer)")
     models.require_loadable(path)
     parsed = lsdfile.parse(path)
     spec = _parse_factors(parsed, factors)
-    existing = _design_files(folder, name)
-    if existing["definition"] and not overwrite:
-        raise models.ModelError("a design for %s already exists (%d files); pass overwrite=True to replace it"
-                                % (name, len(existing["definition"])))
-    for old in existing["definition"] + existing["results"]:
-        old.unlink()
-    shutil.rmtree(folder / (name + "_sa"), ignore_errors=True)
-
-    rng = random.Random(seed)
-    design = sample_points(spec, samples, method, rng)
-    validation = sample_points(spec, validation_samples, "random", rng)
-    names = [item[0] for item in spec]
-    total = samples + validation_samples
+    _clear_design(folder, name, overwrite, keep_sa=False)
 
     # .sa: name, lag, number of values, type (f: float, i: integer), min, max
     sa_lines = []
@@ -145,6 +219,26 @@ def create_design(model, config_file, factors, samples, method="lhs",
         sa_lines.append("%s 0 2 %s %s %s" % (fname, "i:" if is_int else "f:",
                                             format(low, ".15g"), format(high, ".15g")))
     (folder / (name + ".sa")).write_text("\n".join(sa_lines) + "\n")
+
+    if method in ("nolh", "ee"):
+        result = design_from_sa(model, config_file, method, validation_samples, runs_per_point,
+                                seed, overwrite=True, extended=extended, trajectories=trajectories,
+                                levels=levels, jump=jump, pool=pool)
+        if method == "nolh" and samples is not None:
+            result["note"] = "samples is not used with nolh: LSD chooses the table from the number of factors"
+        if method == "ee":
+            result["note"] = ("ee has no out-of-sample set: validation_samples is ignored, and samples "
+                              "is not used (the size is trajectories x (factors + 1))")
+        warnings = coarse_integer_warnings(spec, result["points"]) if method == "nolh" else []
+        if warnings:
+            result["warning"] = " ".join(warnings)
+        return result
+
+    rng = random.Random(seed)
+    design = sample_points(spec, samples, method, rng)
+    validation = sample_points(spec, validation_samples, "random", rng)
+    names = [item[0] for item in spec]
+    total = samples + validation_samples
     design_csv = "%s_1_%d.csv" % (name, samples)
     valid_csv = "%s_%d_%d.csv" % (name, samples + 1, total)
     (folder / design_csv).write_text(_format_csv(names, design))
@@ -158,6 +252,9 @@ def create_design(model, config_file, factors, samples, method="lhs",
         text = lsdfile.set_settings(text, SIM_NUM=runs_per_point,
                                     SEED=seed + (k - 1) * runs_per_point)
         lsdfile.write_text(folder / ("%s_%d.lsd" % (name, k)), text)
+    design_info_path(folder, name).write_text(json.dumps(
+        {"method": method, "points": samples, "validation_points": validation_samples,
+         "runs_per_point": runs_per_point, "seed": seed}, indent=2) + "\n")
     result = {
         "sensitivity_file": name + ".sa",
         "design_table": design_csv,
@@ -170,6 +267,65 @@ def create_design(model, config_file, factors, samples, method="lhs",
     warnings = coarse_integer_warnings(spec, samples)
     if warnings:
         result["warning"] = " ".join(warnings)
+    return result
+
+
+def design_from_sa(model, config_file, method, validation_samples=10, runs_per_point=2,
+                   seed=1, overwrite=False, extended=False, trajectories=10, levels=4,
+                   jump=2, pool=100) -> dict:
+    """A nolh or ee design from an existing <config>.sa file, by LSD's design code.
+
+    create_design writes the .sa file from its factors and calls this; it can
+    also be called with a .sa file made in LSD's interface (which may name
+    initial values of variables as factors). The design is not seeded from
+    `seed` unless it is given: lsd_doe -r sets the seed LSD's code starts from.
+    """
+    folder = models.resolve_writable(model)
+    path = models.config_path(folder, config_file, model)
+    name = models.config_name(config_file)
+    if method not in ("nolh", "ee"):
+        raise models.ModelError("method must be 'nolh' or 'ee'")
+    if method == "ee":
+        _check_ee_settings(trajectories, levels, jump, pool)
+    elif validation_samples < 1:
+        raise models.ModelError("validation_samples must be at least 1 (the analysis needs them)")
+    if runs_per_point < 2:
+        raise models.ModelError("runs_per_point must be at least 2 (LSD's R package refuses fewer)")
+    models.require_loadable(path)
+    if not (folder / (name + ".sa")).is_file():
+        raise models.ModelError("%s.sa not found" % name)
+    _clear_design(folder, name, overwrite, keep_sa=True)
+
+    info = {"method": method}
+    if method == "nolh":
+        options = ["-m", "nolh", "-r", str(seed)]
+        if extended:
+            options.append("-x")
+        made = run_doe(folder, name, *options)
+        info["extended"] = bool(extended)
+        points, validation_points = made["points"], validation_samples
+        run_doe(folder, name, "-m", "mc", "-n", str(validation_samples), "-i", str(points + 1),
+                "-r", str(seed))
+    else:
+        made = run_doe(folder, name, "-m", "ee", "-t", str(trajectories), "-p", str(pool),
+                       "-l", str(levels), "-j", str(jump), "-r", str(seed))
+        points, validation_points = made["points"], 0
+        info.update({"levels": levels, "jump": jump, "trajectories": trajectories, "pool": pool})
+    total = points + validation_points
+    info.update({"points": points, "validation_points": validation_points,
+                 "runs_per_point": runs_per_point, "seed": seed})
+    _write_runs_and_seeds(folder, name, lsdfile.read_text(path), total, runs_per_point, seed)
+    design_info_path(folder, name).write_text(json.dumps(info, indent=2) + "\n")
+
+    result = {"sensitivity_file": name + ".sa",
+              "design_table": "%s_1_%d.csv" % (name, points)}
+    if method == "nolh":
+        result["validation_table"] = "%s_%d_%d.csv" % (name, points + 1, total)
+    result.update({"configurations": "%s_1.lsd ... %s_%d.lsd" % (name, name, total),
+                   "method": method, "points": points, "validation_points": validation_points,
+                   "runs_per_point": runs_per_point})
+    if method == "ee":
+        result.update({"levels": levels, "jump": jump, "trajectories": trajectories, "pool": pool})
     return result
 
 
@@ -188,7 +344,11 @@ def coarse_integer_warnings(spec, samples: int) -> list:
 
 
 def find_design(folder: Path, name: str) -> dict:
-    """Numbering of an existing design from its csv file names."""
+    """Numbering of an existing design from its csv file names.
+
+    A meta-model design has two tables (design points and out-of-sample
+    points); an elementary effects design has one, and "validation" is None.
+    """
     pattern = re.compile(r"^%s_(\d+)_(\d+)\.csv$" % re.escape(name))
     ranges = []
     for path in folder.iterdir():
@@ -196,8 +356,13 @@ def find_design(folder: Path, name: str) -> dict:
         if match:
             ranges.append((int(match.group(1)), int(match.group(2)), path))
     ranges.sort()
-    if len(ranges) < 2:
+    info = read_design_info(folder, name)
+    needs_two = info is not None and info.get("validation_points", 0) > 0
+    if not ranges or (len(ranges) < 2 and needs_two):
         raise models.ModelError("no complete design for %s: run sa_create_design first" % name)
+    if len(ranges) == 1:
+        return {"design": ranges[0][2], "validation": None,
+                "first": ranges[0][0], "last": ranges[0][1]}
     return {"design": ranges[0][2], "validation": ranges[1][2],
             "first": ranges[0][0], "last": ranges[1][1]}
 
@@ -305,19 +470,59 @@ def check_window(folder: Path, name: str, design: dict, ini_drop: int, n_keep: i
                                 % (ini_drop + n_keep, max_step))
 
 
-def analyze(model, config_file, variable, metamodel="kriging", ini_drop=0,
-            n_keep=-1, r_seed=1) -> dict:
+def _ee_settings(info, design: dict, levels, jump):
+    """Levels and jump for the elementary effects analysis, from the sidecar
+    or, for a design made in LSD's interface, from the caller."""
+    if info is not None and info.get("method") != "ee":
+        raise models.ModelError(
+            "this design was made with method %r; elementary effects needs a design made "
+            "with method 'ee'" % info.get("method"))
+    if info is not None:
+        for label, given in (("levels", levels), ("jump", jump)):
+            if given is not None and given != info[label]:
+                raise models.ModelError("%s=%s does not match the design (%s=%s, from the "
+                                        "design file); omit it" % (label, given, label, info[label]))
+        return info["levels"], info["jump"]
+    if levels is None or jump is None:
+        raise models.ModelError(
+            "this design has no design file (it was not made by sa_create_design); pass levels "
+            "and jump as set in LSD's Elementary Effects dialog (its defaults are 4 and 2)")
+    if design["validation"] is not None:
+        raise models.ModelError("this design has two design tables, so it is a meta-model "
+                                "design, not an elementary effects design")
+    if levels < 2 or levels % 2 != 0 or jump < 1:
+        raise models.ModelError("levels must be even and at least 2, and jump at least 1")
+    return levels, jump
+
+
+def analyze(model, config_file, variable, metamodel=None, ini_drop=0,
+            n_keep=-1, r_seed=1, levels=None, jump=None) -> dict:
     folder = models.resolve_writable(model)
     path = models.config_path(folder, config_file, model)
     name = models.config_name(config_file)
-    if metamodel not in ("kriging", "polynomial"):
-        raise models.ModelError("metamodel must be 'kriging' or 'polynomial'")
+    info = read_design_info(folder, name)
+    if metamodel is None:
+        metamodel = "ee" if info is not None and info.get("method") == "ee" else "kriging"
+    if metamodel not in ("kriging", "polynomial", "ee"):
+        raise models.ModelError("metamodel must be 'kriging', 'polynomial' or 'ee'")
     element = lsdfile.parse(path).element(variable)
     if element is None:
         raise models.ModelError("unknown variable %r" % variable)
     if not element.saved:
         raise models.ModelError("%r is not saved; use set_saved first and rerun the design" % variable)
     design = find_design(folder, name)
+    if metamodel == "ee":
+        levels, jump = _ee_settings(info, design, levels, jump)
+    else:
+        if info is not None and info.get("method") == "ee":
+            raise models.ModelError(
+                "this is an elementary effects design; use metamodel='ee' (kriging and polynomial "
+                "need a lhs, random or nolh design with an out-of-sample set)")
+        if levels is not None or jump is not None:
+            raise models.ModelError("levels and jump are only used with metamodel='ee'")
+        if design["validation"] is None:
+            raise models.ModelError("this design has no out-of-sample table, which the "
+                                    "meta-model needs; create a lhs, random or nolh design")
     if metamodel == "polynomial" and design_factor_count(design) < 2:
         raise models.ModelError(
             "LSD's polynomial meta-model needs at least two factors (its package builds a "
@@ -334,21 +539,33 @@ def analyze(model, config_file, variable, metamodel="kriging", ini_drop=0,
         return {"ok": False, "message": status["message"]}
 
     # R writes into a scratch folder; <config>_sa/ is only touched on success.
+    table_files = ("ee.csv",) if metamodel == "ee" else ("fit.csv", "sobol.csv")
     with tempfile.TemporaryDirectory(prefix="lsd-sa-") as scratch:
         scratch = Path(scratch)
+        validation = design["validation"] or design["design"]
         command = [config.rscript(), R_SCRIPT, folder, name, variable, metamodel,
-                   int(ini_drop), int(n_keep), design["design"], design["validation"],
-                   scratch, int(r_seed)]
+                   int(ini_drop), int(n_keep), design["design"], validation,
+                   int(levels or 0), int(jump or 0), scratch, int(r_seed)]
         result = run(command, cwd=folder, timeout=3600)
         error_file = scratch / "error.txt"
         if error_file.is_file():
             return _r_failure(error_file.read_text().strip()[:1500])
-        if not result.ok or not (scratch / "sobol.csv").is_file():
+        if not result.ok or not (scratch / table_files[-1]).is_file():
             return {"ok": False, "message": "R failed", "output_tail": result.output[-1500:]}
         out = folder / (name + "_sa") / analysis_folder(variable, metamodel)
         out.mkdir(parents=True, exist_ok=True)
-        for filename in ("fit.csv", "sobol.csv"):
+        for filename in table_files:
             shutil.copyfile(scratch / filename, out / filename)
+
+    relative = "%s_sa/%s" % (name, out.name)
+    if metamodel == "ee":
+        answer = {"ok": True, "metamodel": "ee", "levels": levels, "jump": jump,
+                  "effects": ee_effects(out / "ee.csv"),
+                  "files": "%s/ee.csv" % relative}
+        note = column_note(folder, name, variable, design)
+        if note:
+            answer["note"] = note
+        return answer
 
     fit = _read_csv(out / "fit.csv")[0]
     quality = float(fit["value"])
@@ -356,7 +573,6 @@ def analyze(model, config_file, variable, metamodel="kriging", ini_drop=0,
     for row in _read_csv(out / "sobol.csv"):
         sobol.append({"factor": row["factor"], "direct": float(row["direct"]),
                       "interactions": float(row["interactions"])})
-    relative = "%s_sa/%s" % (name, out.name)
     answer = {"ok": True, "metamodel": metamodel, "fit": {fit["metric"]: quality},
               "sobol": sobol, "files": "%s/fit.csv, %s/sobol.csv" % (relative, relative)}
     warnings = []
@@ -374,6 +590,24 @@ def analyze(model, config_file, variable, metamodel="kriging", ini_drop=0,
     if note:
         answer["note"] = note
     return answer
+
+
+def ee_effects(path: Path) -> list:
+    """Rows of ee.csv (sorted by mu.star, as LSD's table is); R writes NA for
+    statistics it could not compute, which become None."""
+    def number(text):
+        try:
+            value = float(text)
+        except ValueError:
+            return None
+        return None if value != value else value
+
+    rows = []
+    for row in _read_csv(path):
+        rows.append({"factor": row["factor"], "mu": number(row["mu"]),
+                     "mu_star": number(row["mu.star"]), "sigma": number(row["sigma"]),
+                     "se": number(row["se"]), "p_value": number(row["p.value"])})
+    return rows
 
 
 def analysis_folder(variable: str, metamodel: str) -> str:
@@ -427,5 +661,13 @@ def _r_failure(r_message: str) -> dict:
                             "mean/SD of the response and stops when a point has a negative "
                             "mean. Use metamodel='kriging', or a response whose mean is "
                             "positive at every design point."),
+                "r_message": r_message}
+    if "Not enough data files" in r_message:
+        return {"ok": False,
+                "message": ("LSD's R package needs at least two runs per design point and found "
+                            "fewer result files. A design made in LSD's interface with one run "
+                            "per configuration has to be rerun with SIM_NUM 2 or more in every "
+                            "numbered configuration; a design made by sa_create_design may not "
+                            "have been run completely (see sa_run_design)."),
                 "r_message": r_message}
     return {"ok": False, "message": r_message}
