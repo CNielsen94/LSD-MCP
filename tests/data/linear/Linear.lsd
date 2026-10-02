@@ -1,0 +1,75 @@
+	
+Label Root
+{
+	Son: Unit
+	Label Unit
+	{
+		Param: a
+		Param: b
+		Param: c
+		Param: n
+		Var: Z
+
+	}
+
+
+}
+
+
+DATA
+
+Object: Root C	1
+
+Object: Unit C	1
+Param: a 0 n + n n	0.5
+Param: b 0 n + n n	2.5
+Param: c 0 n + n n	0
+Param: n 0 n + n n	5
+Var: Z 1 s + n n	0
+
+SIM_NUM 1
+SEED 1
+MAX_STEP 10
+EQUATION fun_Linear.cpp
+MODELREPORT report_Linear.html
+
+DESCRIPTION
+
+Object_Root
+(no description available)
+END_DESCRIPTION
+
+Object_Unit
+(no description available)
+END_DESCRIPTION
+
+Parameter_a
+(no description available)
+END_DESCRIPTION
+
+Parameter_b
+(no description available)
+END_DESCRIPTION
+
+Parameter_c
+(no description available)
+END_DESCRIPTION
+
+Parameter_n
+(no description available)
+END_DESCRIPTION
+
+Variable_Z
+(no description available)
+END_DESCRIPTION
+
+
+DOCUOBSERVE
+
+END_DOCUOBSERVE
+
+
+DOCUINITIAL
+
+END_DOCUINITIAL
+
